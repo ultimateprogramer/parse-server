@@ -4,14 +4,12 @@
 // Requires the database adapter to be based on mongoclient
 
 import { GridStore } from 'mongodb';
-
-import * as Path from 'path';
 import { FilesAdapter } from './FilesAdapter';
 
-class GridStoreAdapter extends FilesAdapter {
+export class GridStoreAdapter extends FilesAdapter {
   // For a given config object, filename, and data, store a file
   // Returns a promise
-  createFileAsync(config, filename, data) {
+  createFile(config, filename, data) {
     return config.database.connect().then(() => {
       let gridStore = new GridStore(config.database.db, filename, 'w');
       return gridStore.open();
@@ -22,7 +20,18 @@ class GridStoreAdapter extends FilesAdapter {
     });
   }
 
-  getFileDataAsync(config, filename) {
+  deleteFile(config, filename) {
+    return config.database.connect().then(() => {
+      let gridStore = new GridStore(config.database.db, filename, 'w');
+      return gridStore.open();
+    }).then((gridStore) => {
+      return gridStore.unlink();
+    }).then((gridStore) => {
+      return gridStore.close();
+    });
+  }
+
+  getFileData(config, filename) {
     return config.database.connect().then(() => {
       return GridStore.exist(config.database.db, filename);
     }).then(() => {
@@ -33,10 +42,8 @@ class GridStoreAdapter extends FilesAdapter {
     });
   }
 
-  getFileLocation(config, request, filename) {
-    return (request.protocol + '://' + request.get('host') +
-    Path.dirname(request.originalUrl) + '/' + config.applicationId +
-    '/' + encodeURIComponent(filename));
+  getFileLocation(config, filename) {
+    return (config.mount + '/files/' + config.applicationId + '/' + encodeURIComponent(filename));
   }
 }
 

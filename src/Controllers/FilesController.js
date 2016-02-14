@@ -4,11 +4,9 @@ import express from 'express';
 import mime from 'mime';
 import { Parse } from 'parse/node';
 import BodyParser from 'body-parser';
-import hat from 'hat';
 import * as Middlewares from '../middlewares';
 import Config from '../Config';
-
-const rack = hat.rack();
+import { randomHexString } from '../cryptoUtils';
 
 export class FilesController {
   constructor(filesAdapter) {
@@ -18,9 +16,10 @@ export class FilesController {
   getHandler() {
     return (req, res) => {
       let config = new Config(req.params.appId);
-      this._filesAdapter.getFileDataAsync(config, req.params.filename).then((data) => {
+      let filename = req.params.filename;
+      this._filesAdapter.getFileData(config, filename).then((data) => {
         res.status(200);
-        var contentType = mime.lookup(req.params.filename);
+        var contentType = mime.lookup(filename);
         res.set('Content-type', contentType);
         res.end(data);
       }).catch((error) => {
@@ -60,18 +59,59 @@ export class FilesController {
         extension = '.' + mime.extension(contentType);
       }
 
-      let filename = rack() + '_' + req.params.filename + extension;
-      this._filesAdapter.createFileAsync(req.config, filename, req.body).then(() => {
+      let filename = randomHexString(32) + '_' + req.params.filename + extension;
+      this._filesAdapter.createFile(req.config, filename, req.body).then(() => {
         res.status(201);
-        var location = this._filesAdapter.getFileLocation(req.config, req, filename);
+        var location = this._filesAdapter.getFileLocation(req.config, filename);
         res.set('Location', location);
         res.json({ url: location, name: filename });
       }).catch((error) => {
-        console.log(error);
         next(new Parse.Error(Parse.Error.FILE_SAVE_ERROR,
           'Could not store file.'));
       });
     };
+  }
+
+  deleteHandler() {
+    return (req, res, next) => {
+      this._filesAdapter.deleteFile(req.config, req.params.filename).then(() => {
+        res.status(200);
+        // TODO: return useful JSON here?
+        res.end();
+      }).catch((error) => {
+        next(new Parse.Error(Parse.Error.FILE_DELETE_ERROR,
+          'Could not delete file.'));
+      });
+    };
+  }
+
+  /**
+   * Find file references in REST-format object and adds the url key
+   * with the current mount point and app id.
+   * Object may be a single object or list of REST-format objects.
+   */
+  expandFilesInObject(config, object) {
+    if (object instanceof Array) {
+      object.map((obj) => this.expandFilesInObject(config, obj));
+      return;
+    }
+    if (typeof object !== 'object') {
+      return;
+    }
+    for (let key in object) {
+      let fileObject = object[key];
+      if (fileObject && fileObject['__type'] === 'File') {
+        if (fileObject['url']) {
+          continue;
+        }
+        let filename = fileObject['name'];
+        if (filename.indexOf('tfss-') === 0) {
+          fileObject['url'] = 'http://files.parsetfss.com/' + config.fileKey + '/' + encodeURIComponent(filename);
+        } else {
+          fileObject['url'] = this._filesAdapter.getFileLocation(config, filename);
+        }
+      }
+    }
   }
 
   getExpressRouter() {
@@ -88,6 +128,13 @@ export class FilesController {
       BodyParser.raw({type: '*/*', limit: '20mb'}),
       Middlewares.handleParseHeaders,
       this.createHandler()
+    );
+
+    router.delete('/files/:filename',
+      Middlewares.allowCrossDomain,
+      Middlewares.handleParseHeaders,
+      Middlewares.enforceMasterKeyAccess,
+      this.deleteHandler()
     );
 
     return router;

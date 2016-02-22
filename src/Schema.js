@@ -59,8 +59,22 @@ var defaultColumns = {
     "sessionToken":   {type:'String'},
     "expiresAt":      {type:'Date'},
     "createdWith":    {type:'Object'}
+  },
+  _Product: {
+    "productIdentifier":  {type:'String'},
+    "download":           {type:'File'},
+    "downloadName":       {type:'String'},
+    "icon":               {type:'File'},
+    "order":              {type:'Number'},
+    "title":              {type:'String'},
+    "subtitle":            {type:'String'},
   }
 };
+
+
+var requiredColumns = {
+  _Product: ["productIdentifier", "icon", "order", "title", "subtitle"]
+}
 
 // Valid classes must:
 // Be one of _User, _Installation, _Role, _Session OR
@@ -75,6 +89,7 @@ function classNameIsValid(className) {
     className === '_Session' ||
     className === '_SCHEMA' || //TODO: remove this, as _SCHEMA is not a valid class name for storing Parse Objects.
     className === '_Role' ||
+    className === '_Product' ||
     joinClassRegex.test(className) ||
     //Class names have the same constraints as field names, but also allow the previous additional names.
     fieldNameIsValid(className)
@@ -116,7 +131,7 @@ function schemaAPITypeToMongoFieldType(type) {
       return invalidJsonError;
     } else if (!classNameIsValid(type.targetClass)) {
       return { error: invalidClassNameMessage(type.targetClass), code: Parse.Error.INVALID_CLASS_NAME };
-    } else  {
+    } else {
       return { result: '*' + type.targetClass };
     }
   }
@@ -200,6 +215,114 @@ Schema.prototype.reload = function() {
   return load(this.collection);
 };
 
+// Returns { code, error } if invalid, or { result }, an object
+// suitable for inserting into _SCHEMA collection, otherwise
+function mongoSchemaFromFieldsAndClassName(fields, className) {
+  if (!classNameIsValid(className)) {
+    return {
+      code: Parse.Error.INVALID_CLASS_NAME,
+      error: invalidClassNameMessage(className),
+    };
+  }
+
+  for (var fieldName in fields) {
+    if (!fieldNameIsValid(fieldName)) {
+      return {
+        code: Parse.Error.INVALID_KEY_NAME,
+        error: 'invalid field name: ' + fieldName,
+      };
+    }
+    if (!fieldNameIsValidForClass(fieldName, className)) {
+      return {
+        code: 136,
+        error: 'field ' + fieldName + ' cannot be added',
+      };
+    }
+  }
+
+  var mongoObject = {
+    _id: className,
+    objectId: 'string',
+    updatedAt: 'string',
+    createdAt: 'string'
+  };
+
+  for (var fieldName in defaultColumns[className]) {
+    var validatedField = schemaAPITypeToMongoFieldType(defaultColumns[className][fieldName]);
+    if (!validatedField.result) {
+      return validatedField;
+    }
+    mongoObject[fieldName] = validatedField.result;
+  }
+
+  for (var fieldName in fields) {
+    var validatedField = schemaAPITypeToMongoFieldType(fields[fieldName]);
+    if (!validatedField.result) {
+      return validatedField;
+    }
+    mongoObject[fieldName] = validatedField.result;
+  }
+
+  var geoPoints = Object.keys(mongoObject).filter(key => mongoObject[key] === 'geopoint');
+  if (geoPoints.length > 1) {
+    return {
+      code: Parse.Error.INCORRECT_TYPE,
+      error: 'currently, only one GeoPoint field may exist in an object. Adding ' + geoPoints[1] + ' when ' + geoPoints[0] + ' already exists.',
+    };
+  }
+
+  return { result: mongoObject };
+}
+
+function mongoFieldTypeToSchemaAPIType(type) {
+  if (type[0] === '*') {
+    return {
+      type: 'Pointer',
+      targetClass: type.slice(1),
+    };
+  }
+  if (type.startsWith('relation<')) {
+    return {
+      type: 'Relation',
+      targetClass: type.slice('relation<'.length, type.length - 1),
+    };
+  }
+  switch (type) {
+    case 'number':   return {type: 'Number'};
+    case 'string':   return {type: 'String'};
+    case 'boolean':  return {type: 'Boolean'};
+    case 'date':     return {type: 'Date'};
+    case 'map':
+    case 'object':   return {type: 'Object'};
+    case 'array':    return {type: 'Array'};
+    case 'geopoint': return {type: 'GeoPoint'};
+    case 'file':     return {type: 'File'};
+  }
+}
+
+// Builds a new schema (in schema API response format) out of an
+// existing mongo schema + a schemas API put request. This response
+// does not include the default fields, as it is intended to be passed
+// to mongoSchemaFromFieldsAndClassName. No validation is done here, it
+// is done in mongoSchemaFromFieldsAndClassName.
+function buildMergedSchemaObject(mongoObject, putRequest) {
+  var newSchema = {};
+  for (var oldField in mongoObject) {
+    if (oldField !== '_id' && oldField !== 'ACL' &&  oldField !== 'updatedAt' && oldField !== 'createdAt' && oldField !== 'objectId') {
+      var fieldIsDeleted = putRequest[oldField] && putRequest[oldField].__op === 'Delete'
+      if (!fieldIsDeleted) {
+        newSchema[oldField] = mongoFieldTypeToSchemaAPIType(mongoObject[oldField]);
+      }
+    }
+  }
+  for (var newField in putRequest) {
+    if (newField !== 'objectId' && putRequest[newField].__op !== 'Delete') {
+      newSchema[newField] = putRequest[newField];
+    }
+  }
+  return newSchema;
+}
+
 // Create a new class that includes the three default fields.
 // ACL is an implicit column that does not get an entry in the
 // _SCHEMAS database. Returns a promise that resolves with the
@@ -215,58 +338,13 @@ Schema.prototype.addClassIfNotExists = function(className, fields) {
     });
   }
 
-  if (!classNameIsValid(className)) {
-    return Promise.reject({
-      code: Parse.Error.INVALID_CLASS_NAME,
-      error: invalidClassNameMessage(className),
-    });
-  }
-  for (var fieldName in fields) {
-    if (!fieldNameIsValid(fieldName)) {
-      return Promise.reject({
-        code: Parse.Error.INVALID_KEY_NAME,
-        error: 'invalid field name: ' + fieldName,
-      });
-    }
-    if (!fieldNameIsValidForClass(fieldName, className)) {
-      return Promise.reject({
-        code: 136,
-        error: 'field ' + fieldName + ' cannot be added',
-      });
-    }
+  var mongoObject = mongoSchemaFromFieldsAndClassName(fields, className);
+
+  if (!mongoObject.result) {
+    return Promise.reject(mongoObject);
   }
 
-  var mongoObject = {
-    _id: className,
-    objectId: 'string',
-    updatedAt: 'string',
-    createdAt: 'string'
-  };
-  for (var fieldName in defaultColumns[className]) {
-    var validatedField = schemaAPITypeToMongoFieldType(defaultColumns[className][fieldName]);
-    if (validatedField.code) {
-      return Promise.reject(validatedField);
-    }
-    mongoObject[fieldName] = validatedField.result;
-  }
-
-  for (var fieldName in fields) {
-    var validatedField = schemaAPITypeToMongoFieldType(fields[fieldName]);
-    if (validatedField.code) {
-      return Promise.reject(validatedField);
-    }
-    mongoObject[fieldName] = validatedField.result;
-  }
-
-  var geoPoints = Object.keys(mongoObject).filter(key => mongoObject[key] === 'geopoint');
-  if (geoPoints.length > 1) {
-    return Promise.reject({
-      code: Parse.Error.INCORRECT_TYPE,
-      error: 'currently, only one GeoPoint field may exist in an object. Adding ' + geoPoints[1] + ' when ' + geoPoints[0] + ' already exists.',
-    });
-  }
-
-  return this.collection.insertOne(mongoObject)
+  return this.collection.insertOne(mongoObject.result)
   .then(result => result.ops[0])
   .catch(error => {
     if (error.code === 11000) { //Mongo's duplicate key error
@@ -458,7 +536,7 @@ Schema.prototype.deleteField = function(fieldName, className, database, prefix) 
         });
       }
 
-      if (schema.data[className][fieldName].startsWith('relation')) {
+      if (schema.data[className][fieldName].startsWith('relation<')) {
         //For relations, drop the _Join table
         return database.dropCollection(prefix + '_Join:' + fieldName + ':' + className)
         //Save the _SCHEMA object
@@ -502,7 +580,7 @@ function thenValidateField(schemaPromise, className, key, type) {
 // Validates an object provided in REST format.
 // Returns a promise that resolves to the new schema if this object is
 // valid.
-Schema.prototype.validateObject = function(className, object) {
+Schema.prototype.validateObject = function(className, object, query) {
   var geocount = 0;
   var promise = this.validateClassName(className);
   for (var key in object) {
@@ -523,8 +601,47 @@ Schema.prototype.validateObject = function(className, object) {
     }
     promise = thenValidateField(promise, className, key, expected);
   }
+  promise = thenValidateRequiredColumns(promise, className, object, query);
   return promise;
 };
+
+// Given a schema promise, construct another schema promise that
+// validates this field once the schema loads.
+function thenValidateRequiredColumns(schemaPromise, className, object, query) {
+  return schemaPromise.then((schema) => {
+    return schema.validateRequiredColumns(className, object, query);
+  });
+}
+
+// Validates that all the properties are set for the object
+Schema.prototype.validateRequiredColumns = function(className, object, query) {
+
+  var columns = requiredColumns[className];
+  if (!columns || columns.length == 0) {
+    return Promise.resolve(this);
+  }
+    
+  var missingColumns = columns.filter(function(column){
+    if (query && query.objectId) {
+      if (object[column] && typeof object[column] === "object") {
+        // Trying to delete a required column
+        return object[column].__op == 'Delete';
+      }
+      // Not trying to do anything there
+      return false;
+    }
+    return !object[column] 
+  });
+  
+  if (missingColumns.length > 0) {
+   throw new Parse.Error(
+        Parse.Error.INCORRECT_TYPE,
+        missingColumns[0]+' is required.');
+  }
+  
+  return Promise.resolve(this);
+}
+
 
 // Validates an operation passes class-level-permissions set in the schema
 Schema.prototype.validatePermission = function(className, aclGroup, operation) {
@@ -651,4 +768,9 @@ function getObjectType(obj) {
 module.exports = {
   load: load,
   classNameIsValid: classNameIsValid,
+  invalidClassNameMessage: invalidClassNameMessage,
+  mongoSchemaFromFieldsAndClassName: mongoSchemaFromFieldsAndClassName,
+  schemaAPITypeToMongoFieldType: schemaAPITypeToMongoFieldType,
+  buildMergedSchemaObject: buildMergedSchemaObject,
+  mongoFieldTypeToSchemaAPIType: mongoFieldTypeToSchemaAPIType,
 };

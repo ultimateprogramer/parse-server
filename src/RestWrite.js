@@ -9,7 +9,7 @@ var cache = require('./cache');
 var Config = require('./Config');
 var cryptoUtils = require('./cryptoUtils');
 var passwordCrypto = require('./password');
-var facebook = require('./facebook');
+var oauth = require("./oauth");
 var Parse = require('parse/node');
 var triggers = require('./triggers');
 
@@ -27,6 +27,7 @@ function RestWrite(config, auth, className, query, data, originalData) {
   this.auth = auth;
   this.className = className;
   this.storage = {};
+  this.runOptions = {};
 
   if (!query && data.objectId) {
     throw new Parse.Error(Parse.Error.INVALID_KEY_NAME, 'objectId ' +
@@ -66,6 +67,8 @@ function RestWrite(config, auth, className, query, data, originalData) {
 // status and location are optional.
 RestWrite.prototype.execute = function() {
   return Promise.resolve().then(() => {
+    return this.getUserAndRoleACL();
+  }).then(() => {
     return this.validateSchema();
   }).then(() => {
     return this.handleInstallation();
@@ -88,9 +91,28 @@ RestWrite.prototype.execute = function() {
   });
 };
 
+// Uses the Auth object to get the list of roles, adds the user id
+RestWrite.prototype.getUserAndRoleACL = function() {
+  if (this.auth.isMaster) {
+    return Promise.resolve();
+  }
+
+  this.runOptions.acl = ['*'];
+
+  if( this.auth.user ){
+    return this.auth.getUserRoles().then((roles) => {
+      roles.push(this.auth.user.id);
+      this.runOptions.acl = this.runOptions.acl.concat(roles);
+      return Promise.resolve();
+    });
+  }else{
+    return Promise.resolve();
+  }
+};
+
 // Validates this operation against the schema.
 RestWrite.prototype.validateSchema = function() {
-  return this.config.database.validateObject(this.className, this.data);
+  return this.config.database.validateObject(this.className, this.data, this.query);
 };
 
 // Runs any beforeSave triggers against this operation.
@@ -147,19 +169,26 @@ RestWrite.prototype.validateAuthData = function() {
     return;
   }
 
-  var facebookData = this.data.authData.facebook;
+  var authData = this.data.authData;
   var anonData = this.data.authData.anonymous;
-
+  
   if (this.config.enableAnonymousUsers === true && (anonData === null ||
     (anonData && anonData.id))) {
     return this.handleAnonymousAuthData();
-  } else if (facebookData === null ||
-    (facebookData && facebookData.id && facebookData.access_token)) {
-    return this.handleFacebookAuthData();
-  } else {
-    throw new Parse.Error(Parse.Error.UNSUPPORTED_SERVICE,
-                          'This authentication method is unsupported.');
+  } 
+
+  // Not anon, try other providers
+  var providers = Object.keys(authData);
+  if (!anonData && providers.length == 1) {
+    var provider = providers[0];
+    var providerAuthData = authData[provider];
+    var hasToken = (providerAuthData && providerAuthData.id);
+    if (providerAuthData === null || hasToken) {
+      return this.handleOAuthAuthData(provider);
+    }
   }
+  throw new Parse.Error(Parse.Error.UNSUPPORTED_SERVICE,
+                          'This authentication method is unsupported.');
 };
 
 RestWrite.prototype.handleAnonymousAuthData = function() {
@@ -208,27 +237,71 @@ RestWrite.prototype.handleAnonymousAuthData = function() {
 
 };
 
-RestWrite.prototype.handleFacebookAuthData = function() {
-  var facebookData = this.data.authData.facebook;
-  if (facebookData === null && this.query) {
-    // We are unlinking from Facebook.
-    this.data._auth_data_facebook = null;
+RestWrite.prototype.handleOAuthAuthData = function(provider) {
+  var authData = this.data.authData[provider];
+
+  if (authData === null && this.query) {
+    // We are unlinking from the provider.
+    this.data["_auth_data_" + provider ] = null;
     return;
   }
 
-  return facebook.validateUserId(facebookData.id,
-                                 facebookData.access_token)
+  var appIds;
+  var oauthOptions = this.config.oauth[provider];
+  if (oauthOptions) {
+    appIds = oauthOptions.appIds;
+  } else if (provider == "facebook") {
+    appIds = this.config.facebookAppIds;
+  }
+
+  var validateAuthData;
+  var validateAppId;
+
+
+  if (oauth[provider]) {
+    validateAuthData = oauth[provider].validateAuthData;
+    validateAppId = oauth[provider].validateAppId;
+  }
+
+  // Try the configuration methods
+  if (oauthOptions) {
+    if (oauthOptions.module) {
+      validateAuthData = require(oauthOptions.module).validateAuthData;
+      validateAppId = require(oauthOptions.module).validateAppId;
+    };
+
+    if (oauthOptions.validateAuthData) {
+      validateAuthData = oauthOptions.validateAuthData;
+    }
+    if (oauthOptions.validateAppId) {
+      validateAppId = oauthOptions.validateAppId;
+    }
+  }
+  // try the custom provider first, fallback on the oauth implementation
+
+  if (!validateAuthData || !validateAppId) {
+    return false;
+  };
+
+  return validateAuthData(authData, oauthOptions)
     .then(() => {
-      return facebook.validateAppId(this.config.facebookAppIds,
-                                    facebookData.access_token);
+      if (appIds && typeof validateAppId === "function") {
+        return validateAppId(appIds, authData, oauthOptions);
+      }
+
+      // No validation required by the developer
+      return Promise.resolve();
+
     }).then(() => {
       // Check if this user already exists
       // TODO: does this handle re-linking correctly?
+      var query = {};
+      query['authData.' + provider + '.id'] = authData.id;
       return this.config.database.find(
         this.className,
-        {'authData.facebook.id': facebookData.id}, {});
+        query, {});
     }).then((results) => {
-      this.storage['authProvider'] = "facebook";
+      this.storage['authProvider'] = provider;
       if (results.length > 0) {
         if (!this.query) {
           // We're signing up, but this user already exists. Short-circuit
@@ -247,7 +320,7 @@ RestWrite.prototype.handleFacebookAuthData = function() {
           delete this.data.authData;
           return;
         }
-        // We're trying to create a duplicate FB auth. Forbid it
+        // We're trying to create a duplicate oauth auth. Forbid it
         throw new Parse.Error(Parse.Error.ACCOUNT_ALREADY_LINKED,
                               'this auth is already used');
       } else {
@@ -256,12 +329,12 @@ RestWrite.prototype.handleFacebookAuthData = function() {
 
       // This FB auth does not already exist, so transform it to a
       // saveable format
-      this.data._auth_data_facebook = facebookData;
+      this.data["_auth_data_" + provider ] = authData;
 
       // Delete the rest format key before saving
       delete this.data.authData;
     });
-};
+}
 
 // The non-third-party parts of User transformation
 RestWrite.prototype.transformUser = function() {
@@ -632,6 +705,10 @@ RestWrite.prototype.runDatabaseOperation = function() {
     throw new Parse.Error(Parse.Error.SESSION_MISSING,
                           'cannot modify user ' + this.query.objectId);
   }
+  
+  if (this.className === '_Product' && this.data.download) {
+    this.data.downloadName = this.data.download.name;
+  }
 
   // TODO: Add better detection for ACL, ensuring a user can't be locked from
   //       their own user record.
@@ -639,18 +716,10 @@ RestWrite.prototype.runDatabaseOperation = function() {
     throw new Parse.Error(Parse.Error.INVALID_ACL, 'Invalid ACL.');
   }
 
-  var options = {};
-  if (!this.auth.isMaster) {
-    options.acl = ['*'];
-    if (this.auth.user) {
-      options.acl.push(this.auth.user.id);
-    }
-  }
-
   if (this.query) {
     // Run an update
     return this.config.database.update(
-      this.className, this.query, this.data, options).then((resp) => {
+      this.className, this.query, this.data, this.runOptions).then((resp) => {
         this.response = resp;
         this.response.updatedAt = this.updatedAt;
       });
@@ -663,7 +732,7 @@ RestWrite.prototype.runDatabaseOperation = function() {
       this.data.ACL = ACL;
     } 
     // Run a create
-    return this.config.database.create(this.className, this.data, options)
+    return this.config.database.create(this.className, this.data, this.runOptions)
       .then(() => {
         var resp = {
           objectId: this.data.objectId,

@@ -2,11 +2,22 @@
 import PromiseRouter from '../PromiseRouter';
 import rest from '../rest';
 
-export class ClassesRouter {
-  // Returns a promise that resolves to a {response} object.
+import url from 'url';
+
+export class ClassesRouter extends PromiseRouter {
+  
   handleFind(req) {
-    let body = Object.assign(req.body, req.query);
+    let body = Object.assign(req.body, ClassesRouter.JSONFromQuery(req.query));
     let options = {};
+    let allowConstraints = ['skip', 'limit', 'order', 'count', 'keys',
+      'include', 'redirectClassNameForKey', 'where'];
+
+    for (let key of Object.keys(body)) {
+      if (allowConstraints.indexOf(key) === -1) {
+        throw new Parse.Error(Parse.Error.INVALID_QUERY, 'Improper encode of parameter');
+      }
+    }
+
     if (body.skip) {
       options.skip = Number(body.skip);
     }
@@ -54,10 +65,17 @@ export class ClassesRouter {
           throw new Parse.Error(Parse.Error.OBJECT_NOT_FOUND, 'Object not found.');
         }
         
-        if(req.params.className === "_User"){
+        if (req.params.className === "_User") {
+          
           delete response.results[0].sessionToken;
-        }
-
+          
+          const user =  response.results[0];
+         
+          if (req.auth.user && user.objectId == req.auth.user.id) {
+            // Force the session token
+            response.results[0].sessionToken = req.info.sessionToken;
+          }
+        }        
         return { response: response.results[0] };
       });
   }
@@ -80,14 +98,24 @@ export class ClassesRouter {
       });
   }
 
-  getExpressRouter() {
-    var router = new PromiseRouter();
-    router.route('GET', '/classes/:className', (req) => { return this.handleFind(req); });
-    router.route('GET', '/classes/:className/:objectId', (req) => { return this.handleGet(req); });
-    router.route('POST', '/classes/:className', (req) => { return this.handleCreate(req); });
-    router.route('PUT', '/classes/:className/:objectId', (req) => { return this.handleUpdate(req); });
-    router.route('DELETE',  '/classes/:className/:objectId', (req) => { return this.handleDelete(req); });
-    return router;
+  static JSONFromQuery(query) {
+    let json = {};
+    for (let [key, value] of Object.entries(query)) {
+      try {
+        json[key] = JSON.parse(value);
+      } catch (e) {
+        json[key] = value;
+      }
+    }
+    return json
+  }
+  
+  mountRoutes() {
+    this.route('GET', '/classes/:className', (req) => { return this.handleFind(req); });
+    this.route('GET', '/classes/:className/:objectId', (req) => { return this.handleGet(req); });
+    this.route('POST', '/classes/:className', (req) => { return this.handleCreate(req); });
+    this.route('PUT', '/classes/:className/:objectId', (req) => { return this.handleUpdate(req); });
+    this.route('DELETE',  '/classes/:className/:objectId', (req) => { return this.handleDelete(req); });
   }
 }
 

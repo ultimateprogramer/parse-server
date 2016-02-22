@@ -105,9 +105,9 @@ ExportAdapter.prototype.redirectClassNameForKey = function(className, key) {
 // Returns a promise that resolves to the new schema.
 // This does not update this.schema, because in a situation like a
 // batch request, that could confuse other users of the schema.
-ExportAdapter.prototype.validateObject = function(className, object) {
+ExportAdapter.prototype.validateObject = function(className, object, query) {
   return this.loadSchema().then((schema) => {
-    return schema.validateObject(className, object);
+    return schema.validateObject(className, object, query);
   });
 };
 
@@ -306,7 +306,8 @@ ExportAdapter.prototype.destroy = function(className, query, options = {}) {
 
     return coll.remove(mongoWhere);
   }).then((resp) => {
-    if (resp.result.n === 0) {
+    //Check _Session to avoid changing password failed without any session.
+    if (resp.result.n === 0 && className !== "_Session") {
       return Promise.reject(
         new Parse.Error(Parse.Error.OBJECT_NOT_FOUND,
                         'Object not found.'));

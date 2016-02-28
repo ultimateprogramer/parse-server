@@ -1,13 +1,14 @@
 // A Config object provides information about how a specific app is
 // configured.
 // mount is the URL for the root of the API; includes http, domain, etc.
+
+import cache from './cache';
+
 export class Config {
+  constructor(applicationId: string, mount: string) {
+    let DatabaseAdapter = require('./DatabaseAdapter');
 
-  constructor(applicationId, mount) {
-    var cache = require('./cache');
-    var DatabaseAdapter = require('./DatabaseAdapter');
-
-    var cacheInfo = cache.apps[applicationId];
+    let cacheInfo = cache.apps[applicationId];
     this.valid = !!cacheInfo;
     if (!this.valid) {
       return;
@@ -23,8 +24,9 @@ export class Config {
     this.fileKey = cacheInfo.fileKey;
     this.facebookAppIds = cacheInfo.facebookAppIds;
     this.enableAnonymousUsers = cacheInfo.enableAnonymousUsers;
-
-    this.database = DatabaseAdapter.getDatabaseConnection(applicationId);
+    this.allowClientClassCreation = cacheInfo.allowClientClassCreation;
+    this.database = DatabaseAdapter.getDatabaseConnection(applicationId, this.collectionPrefix);
+    this.hooksController = cacheInfo.hooksController;
     this.filesController = cacheInfo.filesController;
     this.pushController = cacheInfo.pushController;   
     this.loggerController = cacheInfo.loggerController;
@@ -32,7 +34,7 @@ export class Config {
 
     this.mount = mount;
   }
-};
+}
 
 export default Config;
 module.exports = Config;

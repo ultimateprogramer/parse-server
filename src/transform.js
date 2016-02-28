@@ -262,12 +262,8 @@ function transformACL(restObject) {
       wperm.push(entry);
     }
   }
-  if (rperm.length) {
-    output._rperm = rperm;
-  }
-  if (wperm.length) {
-    output._wperm = wperm;
-  }
+  output._rperm = rperm;
+  output._wperm = wperm;
   delete restObject.ACL;
   return output;
 }
@@ -627,6 +623,7 @@ function untransformObject(schema, className, mongoObject, isNestedObject = fals
       case '_acl':
       case '_email_verify_token':
       case '_perishable_token':
+      case '_tombstone':
         break;
       case '_session_token':
         restObject['sessionToken'] = mongoObject[key];

@@ -1,3 +1,4 @@
+/** @flow weak */
 // Database Adapter
 //
 // Allows you to change the underlying database.
@@ -17,7 +18,6 @@
 var ExportAdapter = require('./ExportAdapter');
 
 var adapter = ExportAdapter;
-var cache = require('./cache');
 var dbConnections = {};
 var databaseURI = 'mongodb://localhost:27017/parse';
 var appDatabaseURIs = {};
@@ -40,14 +40,14 @@ function clearDatabaseURIs() {
   dbConnections = {};
 }
 
-function getDatabaseConnection(appId) {
+function getDatabaseConnection(appId: string, collectionPrefix: string) {
   if (dbConnections[appId]) {
     return dbConnections[appId];
   }
 
   var dbURI = (appDatabaseURIs[appId] ? appDatabaseURIs[appId] : databaseURI);
   dbConnections[appId] = new adapter(dbURI, {
-    collectionPrefix: cache.apps[appId]['collectionPrefix']
+    collectionPrefix: collectionPrefix
   });
   dbConnections[appId].connect();
   return dbConnections[appId];
@@ -59,5 +59,5 @@ module.exports = {
   setAdapter: setAdapter,
   setDatabaseURI: setDatabaseURI,
   setAppDatabaseURI: setAppDatabaseURI,
-  clearDatabaseURIs: clearDatabaseURIs,
+  clearDatabaseURIs: clearDatabaseURIs
 };

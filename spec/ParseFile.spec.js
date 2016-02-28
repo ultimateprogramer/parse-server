@@ -1,6 +1,8 @@
 // This is a port of the test suite:
 // hungry/js/test/parse_file_test.js
 
+"use strict";
+
 var request = require('request');
 
 var str = "Hello World!";
@@ -10,25 +12,49 @@ for (var i = 0; i < str.length; i++) {
 }
 
 describe('Parse.File testing', () => {
-  it('works with REST API', done => {
-    var headers = {
-      'Content-Type': 'application/octet-stream',
-      'X-Parse-Application-Id': 'test',
-      'X-Parse-REST-API-Key': 'rest'
-    };
-    request.post({
-      headers: headers,
-      url: 'http://localhost:8378/1/files/file.txt',
-      body: 'argle bargle',
-    }, (error, response, body) => {
-      expect(error).toBe(null);
-      var b = JSON.parse(body);
-      expect(b.name).toMatch(/_file.txt$/);
-      expect(b.url).toMatch(/^http:\/\/localhost:8378\/1\/files\/test\/.*file.txt$/);
-      request.get(b.url, (error, response, body) => {
+  describe('creating files', () => {
+    it('works with Content-Type', done => {
+      var headers = {
+        'Content-Type': 'application/octet-stream',
+        'X-Parse-Application-Id': 'test',
+        'X-Parse-REST-API-Key': 'rest'
+      };
+      request.post({
+        headers: headers,
+        url: 'http://localhost:8378/1/files/file.txt',
+        body: 'argle bargle',
+      }, (error, response, body) => {
         expect(error).toBe(null);
-        expect(body).toEqual('argle bargle');
-        done();
+        var b = JSON.parse(body);
+        expect(b.name).toMatch(/_file.txt$/);
+        expect(b.url).toMatch(/^http:\/\/localhost:8378\/1\/files\/test\/.*file.txt$/);
+        request.get(b.url, (error, response, body) => {
+          expect(error).toBe(null);
+          expect(body).toEqual('argle bargle');
+          done();
+        });
+      });
+    });
+
+    it('works without Content-Type', done => {
+      var headers = {
+        'X-Parse-Application-Id': 'test',
+        'X-Parse-REST-API-Key': 'rest'
+      };
+      request.post({
+        headers: headers,
+        url: 'http://localhost:8378/1/files/file.txt',
+        body: 'argle bargle',
+      }, (error, response, body) => {
+        expect(error).toBe(null);
+        var b = JSON.parse(body);
+        expect(b.name).toMatch(/_file.txt$/);
+        expect(b.url).toMatch(/^http:\/\/localhost:8378\/1\/files\/test\/.*file.txt$/);
+        request.get(b.url, (error, response, body) => {
+          expect(error).toBe(null);
+          expect(body).toEqual('argle bargle');
+          done();
+        });
       });
     });
   });
@@ -458,7 +484,22 @@ describe('Parse.File testing', () => {
       );
       done();
     });
-
   });
 
+  it('supports files in objects without urls', done => {
+    var file = {
+      __type: 'File',
+      name: '123.txt'
+    };
+    var obj = new Parse.Object('FileTest');
+    obj.set('file', file);
+    obj.save().then(() => {
+      var query = new Parse.Query('FileTest');
+      return query.first();
+    }).then(result => {
+      let fileAgain = result.get('file');
+      expect(fileAgain.url()).toMatch(/123.txt$/);
+      done();
+    });
+  });
 });

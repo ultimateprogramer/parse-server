@@ -1,29 +1,28 @@
 // FilesController.js
 import { Parse } from 'parse/node';
 import { randomHexString } from '../cryptoUtils';
+import AdaptableController from './AdaptableController';
+import { FilesAdapter } from '../Adapters/Files/FilesAdapter';
 
-export class FilesController {
-  constructor(filesAdapter) {
-    this._filesAdapter = filesAdapter;
-  }
+export class FilesController extends AdaptableController {
 
   getFileData(config, filename) {
-    return this._filesAdapter.getFileData(config, filename);
+    return this.adapter.getFileData(config, filename);
   }
 
   createFile(config, filename, data) {
     filename = randomHexString(32) + '_' + filename;
-    var location = this._filesAdapter.getFileLocation(config, filename);
-    return this._filesAdapter.createFile(config, filename, data).then(() => {
+    var location = this.adapter.getFileLocation(config, filename);
+    return this.adapter.createFile(config, filename, data).then(() => {
       return Promise.resolve({
         url: location,
         name: filename
       });
     });
-  } 
+  }
 
   deleteFile(config, filename) {
-    return this._filesAdapter.deleteFile(config, filename);
+    return this.adapter.deleteFile(config, filename);
   }
 
   /**
@@ -49,10 +48,14 @@ export class FilesController {
         if (filename.indexOf('tfss-') === 0) {
           fileObject['url'] = 'http://files.parsetfss.com/' + config.fileKey + '/' + encodeURIComponent(filename);
         } else {
-          fileObject['url'] = this._filesAdapter.getFileLocation(config, filename);
+          fileObject['url'] = this.adapter.getFileLocation(config, filename);
         }
       }
     }
+  }
+
+  expectedAdapterType() {
+    return FilesAdapter;
   }
 }
 

@@ -372,6 +372,15 @@ describe('miscellaneous', function() {
       done();
     });
   });
+  
+  it('test cloud function shoud echo keys', function(done) {
+    Parse.Cloud.run('echoKeys').then((result) => {
+      expect(result.applicationId).toEqual(Parse.applicationId);
+      expect(result.masterKey).toEqual(Parse.masterKey);
+      expect(result.javascriptKey).toEqual(Parse.javascriptKey);
+      done();
+    });
+  });
 
   it('test rest_create_app', function(done) {
     var appId;
@@ -841,6 +850,34 @@ describe('miscellaneous', function() {
       expect(e.code).toEqual(Parse.Error.SCRIPT_FAILED);
       expect(e.message).toEqual('Invalid function.');
       done();
+    });
+  });
+
+  it('dedupes an installation properly and returns updatedAt', (done) => {
+    let headers = {
+      'Content-Type': 'application/json',
+      'X-Parse-Application-Id': 'test',
+      'X-Parse-REST-API-Key': 'rest'
+    };
+    let data = {
+      'installationId': 'lkjsahdfkjhsdfkjhsdfkjhsdf',
+      'deviceType': 'embedded'
+    };
+    let requestOptions = {
+      headers: headers,
+      url: 'http://localhost:8378/1/installations',
+      body: JSON.stringify(data)
+    };
+    request.post(requestOptions, (error, response, body) => {
+      expect(error).toBe(null);
+      let b = JSON.parse(body);
+      expect(typeof b.objectId).toEqual('string');
+      request.post(requestOptions, (error, response, body) => {
+        expect(error).toBe(null);
+        let b = JSON.parse(body);
+        expect(typeof b.updatedAt).toEqual('string');
+        done();
+      });
     });
   });
 

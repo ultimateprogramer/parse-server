@@ -163,14 +163,26 @@ describe('Schema', () => {
     .then(schema => schema.addClassIfNotExists('NewClass', {
       foo: {type: 'String'}
     }))
-    .then(result => {
-      expect(result).toEqual({
-        _id: 'NewClass',
-        objectId: 'string',
-        updatedAt: 'string',
-        createdAt: 'string',
-        foo: 'string',
-      })
+    .then(actualSchema => {
+      const expectedSchema = {
+        className: 'NewClass',
+        fields: {
+          objectId: { type: 'String' },
+          updatedAt: { type: 'Date' },
+          createdAt: { type: 'Date' },
+          ACL: { type: 'ACL' },
+          foo: { type: 'String' },
+        },
+        classLevelPermissions: {
+          find: { '*': true },
+          get: { '*': true },
+          create: { '*': true },
+          update: { '*': true },
+          delete: { '*': true },
+          addField: { '*': true },
+        },
+      }
+      expect(dd(actualSchema, expectedSchema)).toEqual(undefined);
       done();
     })
     .catch(error => {
@@ -180,20 +192,18 @@ describe('Schema', () => {
 
   it('will fail to create a class if that class was already created by an object', done => {
     config.database.loadSchema()
-    .then(schema => {
-      schema.validateObject('NewClass', {foo: 7})
-      .then(() => {
-        schema.reload()
-        .then(schema => schema.addClassIfNotExists('NewClass', {
-          foo: {type: 'String'}
-        }))
-        .catch(error => {
-          expect(error.code).toEqual(Parse.Error.INVALID_CLASS_NAME)
-          expect(error.error).toEqual('class NewClass already exists');
-          done();
-        });
+      .then(schema => {
+        schema.validateObject('NewClass', { foo: 7 })
+          .then(() => schema.reloadData())
+          .then(() => schema.addClassIfNotExists('NewClass', {
+            foo: { type: 'String' }
+          }))
+          .catch(error => {
+            expect(error.code).toEqual(Parse.Error.INVALID_CLASS_NAME);
+            expect(error.message).toEqual('Class NewClass already exists.');
+            done();
+          });
       });
-    })
   });
 
   it('will resolve class creation races appropriately', done => {
@@ -203,20 +213,32 @@ describe('Schema', () => {
     .then(schema => {
       var p1 = schema.addClassIfNotExists('NewClass', {foo: {type: 'String'}});
       var p2 = schema.addClassIfNotExists('NewClass', {foo: {type: 'String'}});
-      Promise.race([p1, p2]) //Use race because we expect the first completed promise to be the successful one
-      .then(response => {
-        expect(response).toEqual({
-          _id: 'NewClass',
-          objectId: 'string',
-          updatedAt: 'string',
-          createdAt: 'string',
-          foo: 'string',
-        });
+      Promise.race([p1, p2])
+      .then(actualSchema => {
+        const expectedSchema = {
+          className: 'NewClass',
+          fields: {
+            objectId: { type: 'String' },
+            updatedAt: { type: 'Date' },
+            createdAt: { type: 'Date' },
+            ACL: { type: 'ACL' },
+            foo: { type: 'String' },
+          },
+          classLevelPermissions: {
+            find: { '*': true },
+            get: { '*': true },
+            create: { '*': true },
+            update: { '*': true },
+            delete: { '*': true },
+            addField: { '*': true },
+          },
+        }
+        expect(dd(actualSchema, expectedSchema)).toEqual(undefined);
       });
       Promise.all([p1,p2])
       .catch(error => {
         expect(error.code).toEqual(Parse.Error.INVALID_CLASS_NAME);
-        expect(error.error).toEqual('class NewClass already exists');
+        expect(error.message).toEqual('Class NewClass already exists.');
         done();
       });
     });
@@ -375,23 +397,36 @@ describe('Schema', () => {
       aPointer: {type: 'Pointer', targetClass: 'ThisClassDoesNotExistYet'},
       aRelation: {type: 'Relation', targetClass: 'NewClass'},
     }))
-    .then(mongoObj => {
-      expect(mongoObj).toEqual({
-        _id: 'NewClass',
-        objectId: 'string',
-        createdAt: 'string',
-        updatedAt: 'string',
-        aNumber: 'number',
-        aString: 'string',
-        aBool: 'boolean',
-        aDate: 'date',
-        aObject: 'object',
-        aArray: 'array',
-        aGeoPoint: 'geopoint',
-        aFile: 'file',
-        aPointer: '*ThisClassDoesNotExistYet',
-        aRelation: 'relation<NewClass>',
-      });
+    .then(actualSchema => {
+      const expectedSchema = {
+        className: 'NewClass',
+        fields: {
+          objectId: { type: 'String' },
+          updatedAt: { type: 'Date' },
+          createdAt: { type: 'Date' },
+          ACL: { type: 'ACL' },
+          aString: { type: 'String' },
+          aNumber: { type: 'Number' },
+          aString: { type: 'String' },
+          aBool: { type: 'Boolean' },
+          aDate: { type: 'Date' },
+          aObject: { type: 'Object' },
+          aArray: { type: 'Array' },
+          aGeoPoint: { type: 'GeoPoint' },
+          aFile: { type: 'File' },
+          aPointer: { type: 'Pointer', targetClass: 'ThisClassDoesNotExistYet' },
+          aRelation: { type: 'Relation', targetClass: 'NewClass' },
+        },
+        classLevelPermissions: {
+          find: { '*': true },
+          get: { '*': true },
+          create: { '*': true },
+          update: { '*': true },
+          delete: { '*': true },
+          addField: { '*': true },
+        },
+      }
+      expect(dd(actualSchema, expectedSchema)).toEqual(undefined);
       done();
     });
   });
@@ -401,23 +436,96 @@ describe('Schema', () => {
     .then(schema => schema.addClassIfNotExists('_Installation', {
       foo: {type: 'Number'},
     }))
-    .then(mongoObj => {
-      expect(mongoObj).toEqual({
-        _id: '_Installation',
-        createdAt: 'string',
-        updatedAt: 'string',
-        objectId: 'string',
-        foo: 'number',
-        installationId: 'string',
-        deviceToken: 'string',
-        channels: 'array',
-        deviceType: 'string',
-        pushType: 'string',
-        GCMSenderId: 'string',
-        timeZone: 'string',
-        localeIdentifier: 'string',
-        badge: 'number',
-      });
+    .then(actualSchema => {
+      const expectedSchema = {
+        className: '_Installation',
+        fields: {
+          objectId: { type: 'String' },
+          updatedAt: { type: 'Date' },
+          createdAt: { type: 'Date' },
+          ACL: { type: 'ACL' },
+          foo: { type: 'Number' },
+          installationId: { type: 'String' },
+          deviceToken: { type: 'String' },
+          channels: { type: 'Array' },
+          deviceType: { type: 'String' },
+          pushType: { type: 'String' },
+          GCMSenderId: { type: 'String' },
+          timeZone: { type: 'String' },
+          localeIdentifier: { type: 'String' },
+          badge: { type: 'Number' },
+        },
+        classLevelPermissions: {
+          find: { '*': true },
+          get: { '*': true },
+          create: { '*': true },
+          update: { '*': true },
+          delete: { '*': true },
+          addField: { '*': true },
+        },
+      }
+      expect(dd(actualSchema, expectedSchema)).toEqual(undefined);
+      done();
+    });
+  });
+
+  it('creates non-custom classes which include relation field', done => {
+    config.database.loadSchema()
+    .then(schema => schema.addClassIfNotExists('_Role', {}))
+    .then(actualSchema => {
+      const expectedSchema = {
+        className: '_Role',
+        fields: {
+          objectId: { type: 'String' },
+          updatedAt: { type: 'Date' },
+          createdAt: { type: 'Date' },
+          ACL: { type: 'ACL' },
+          name: { type: 'String' },
+          users: { type: 'Relation', targetClass: '_User' },
+          roles: { type: 'Relation', targetClass: '_Role' },
+        },
+        classLevelPermissions: {
+          find: { '*': true },
+          get: { '*': true },
+          create: { '*': true },
+          update: { '*': true },
+          delete: { '*': true },
+          addField: { '*': true },
+        },
+      };
+      expect(dd(actualSchema, expectedSchema)).toEqual(undefined);
+      done();
+    });
+  });
+
+  it('creates non-custom classes which include pointer field', done => {
+    config.database.loadSchema()
+    .then(schema => schema.addClassIfNotExists('_Session', {}))
+    .then(actualSchema => {
+      const expectedSchema = {
+        className: '_Session',
+        fields: {
+          objectId: { type: 'String' },
+          updatedAt: { type: 'Date' },
+          createdAt: { type: 'Date' },
+          restricted: { type: 'Boolean' },
+          user: { type: 'Pointer', targetClass: '_User' },
+          installationId: { type: 'String' },
+          sessionToken: { type: 'String' },
+          expiresAt: { type: 'Date' },
+          createdWith: { type: 'Object' },
+          ACL: { type: 'ACL' },
+        },
+        classLevelPermissions: {
+          find: { '*': true },
+          get: { '*': true },
+          create: { '*': true },
+          update: { '*': true },
+          delete: { '*': true },
+          addField: { '*': true },
+        },
+      };
+      expect(dd(actualSchema, expectedSchema)).toEqual(undefined);
       done();
     });
   });
@@ -524,7 +632,8 @@ describe('Schema', () => {
       .then(() => config.database.collectionExists('_Join:aRelation:HasPointersAndRelations'))
       .then(exists => {
         if (!exists) {
-          fail('Relation collection should exist after save.');
+          fail('Relation collection ' +
+            'should exist after save.');
         }
       })
       .then(() => config.database.loadSchema())
@@ -539,6 +648,52 @@ describe('Schema', () => {
         fail(error);
         done();
       });
+  });
+
+  it('can delete relation field when related _Join collection not exist', done => {
+    config.database.loadSchema()
+    .then(schema => {
+      schema.addClassIfNotExists('NewClass', {
+        relationField: {type: 'Relation', targetClass: '_User'}
+      })
+      .then(actualSchema => {
+        const expectedSchema = {
+          className: 'NewClass',
+          fields: {
+            objectId: { type: 'String' },
+            updatedAt: { type: 'Date' },
+            createdAt: { type: 'Date' },
+            ACL: { type: 'ACL' },
+            relationField: { type: 'Relation', targetClass: '_User' },
+          },
+          classLevelPermissions: {
+            find: { '*': true },
+            get: { '*': true },
+            create: { '*': true },
+            update: { '*': true },
+            delete: { '*': true },
+            addField: { '*': true },
+          },
+        };
+        expect(dd(actualSchema, expectedSchema)).toEqual(undefined);
+      })
+      .then(() => config.database.collectionExists('_Join:relationField:NewClass'))
+      .then(exist => {
+        expect(exist).toEqual(false);
+      })
+      .then(() => schema.deleteField('relationField', 'NewClass', config.database))
+      .then(() => schema.reloadData())
+      .then(() => {
+        const expectedSchema = {
+          objectId: { type: 'String' },
+          updatedAt: { type: 'Date' },
+          createdAt: { type: 'Date' },
+          ACL: { type: 'ACL' }
+        };
+        expect(dd(schema.data.NewClass, expectedSchema)).toEqual(undefined);
+        done();
+      });
+    });
   });
 
   it('can delete string fields and resave as number field', done => {
@@ -562,6 +717,10 @@ describe('Schema', () => {
         done();
         Parse.Object.enableSingleInstance();
       });
+    })
+    .catch(error => {
+      fail(error);
+      done();
     });
   });
 
@@ -594,7 +753,7 @@ describe('Schema', () => {
   it('can merge schemas', done => {
     expect(Schema.buildMergedSchemaObject({
       _id: 'SomeClass',
-      someType: 'number'
+      someType: { type: 'Number' }
     }, {
       newType: {type: 'Number'}
     })).toEqual({
@@ -607,14 +766,31 @@ describe('Schema', () => {
   it('can merge deletions', done => {
     expect(Schema.buildMergedSchemaObject({
       _id: 'SomeClass',
-      someType: 'number',
-      outDatedType: 'string',
+      someType: { type: 'Number' },
+      outDatedType: { type: 'String' },
     },{
       newType: {type: 'GeoPoint'},
       outDatedType: {__op: 'Delete'},
     })).toEqual({
       someType: {type: 'Number'},
       newType: {type: 'GeoPoint'},
+    });
+    done();
+  });
+
+  it('ignore default field when merge with system class', done => {
+    expect(Schema.buildMergedSchemaObject({
+      _id: '_User',
+      username: { type: 'String' },
+      password: { type: 'String' },
+      authData: { type: 'Object' },
+      email: { type: 'String' },
+      emailVerified: { type: 'Boolean' },
+    },{
+      authData: { type: 'String' },
+      customField: { type: 'String' },
+    })).toEqual({
+      customField: { type: 'String' }
     });
     done();
   });

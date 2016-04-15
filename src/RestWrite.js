@@ -3,13 +3,13 @@
 // This could be either a "create" or an "update".
 
 import cache from './cache';
+var Schema = require('./Schema');
 var deepcopy = require('deepcopy');
 
 var Auth = require('./Auth');
 var Config = require('./Config');
 var cryptoUtils = require('./cryptoUtils');
 var passwordCrypto = require('./password');
-var oauth = require("./oauth");
 var Parse = require('parse/node');
 var triggers = require('./triggers');
 
@@ -84,6 +84,8 @@ RestWrite.prototype.execute = function() {
   }).then(() => {
     return this.runAfterTrigger();
   }).then(() => {
+    return this.cleanUserAuthData();
+  }).then(() => {
     return this.response;
   });
 };
@@ -109,12 +111,10 @@ RestWrite.prototype.getUserAndRoleACL = function() {
 
 // Validates this operation against the allowClientClassCreation config.
 RestWrite.prototype.validateClientClassCreation = function() {
-  let sysClass = ['_User', '_Installation', '_Role', '_Session', '_Product'];
+  let sysClass = Schema.systemClasses;
   if (this.config.allowClientClassCreation === false && !this.auth.isMaster
       && sysClass.indexOf(this.className) === -1) {
-    return this.config.database.loadSchema().then((schema) => {
-      return schema.hasClass(this.className)
-    }).then((hasClass) => {
+    return this.config.database.collectionExists(this.className).then((hasClass) => {
       if (hasClass === true) {
         return Promise.resolve();
       }
@@ -130,7 +130,7 @@ RestWrite.prototype.validateClientClassCreation = function() {
 
 // Validates this operation against the schema.
 RestWrite.prototype.validateSchema = function() {
-  return this.config.database.validateObject(this.className, this.data, this.query);
+  return this.config.database.validateObject(this.className, this.data, this.query, this.runOptions);
 };
 
 // Runs any beforeSave triggers against this operation.
@@ -139,7 +139,7 @@ RestWrite.prototype.runBeforeTrigger = function() {
   if (this.response) {
     return;
   }
-  
+
   // Avoid doing any setup for triggers if there is no 'beforeSave' trigger for this class.
   if (!triggers.triggerExists(this.className, triggers.Types.beforeSave, this.config.applicationId)) {
     return Promise.resolve();
@@ -157,17 +157,19 @@ RestWrite.prototype.runBeforeTrigger = function() {
     // This is an update for existing object.
     originalObject = triggers.inflate(extraData, this.originalData);
   }
-  updatedObject.set(Parse._decode(undefined, this.data));
+  updatedObject.set(this.sanitizedData());
 
   return Promise.resolve().then(() => {
     return triggers.maybeRunTrigger(triggers.Types.beforeSave, this.auth, updatedObject, originalObject, this.config.applicationId);
   }).then((response) => {
     if (response && response.object) {
       this.data = response.object;
+      this.storage['changedByTrigger'] = true;
       // We should delete the objectId for an update write
       if (this.query && this.query.objectId) {
         delete this.data.objectId
       }
+      return this.validateSchema();
     }
   });
 };
@@ -178,7 +180,11 @@ RestWrite.prototype.setRequiredFieldsIfNeeded = function() {
     this.data.updatedAt = this.updatedAt;
     if (!this.query) {
       this.data.createdAt = this.updatedAt;
-      this.data.objectId = cryptoUtils.newObjectId();
+
+      // Only assign new objectId if we are creating new object
+      if (!this.data.objectId) {
+        this.data.objectId = cryptoUtils.newObjectId();
+      }
     }
   }
   return Promise.resolve();
@@ -208,170 +214,98 @@ RestWrite.prototype.validateAuthData = function() {
   }
 
   var authData = this.data.authData;
-  var anonData = this.data.authData.anonymous;
-  
-  if (this.config.enableAnonymousUsers === true && (anonData === null ||
-    (anonData && anonData.id))) {
-    return this.handleAnonymousAuthData();
-  } 
-
-  // Not anon, try other providers
   var providers = Object.keys(authData);
-  if (!anonData && providers.length == 1) {
-    var provider = providers[0];
-    var providerAuthData = authData[provider];
-    var hasToken = (providerAuthData && providerAuthData.id);
-    if (providerAuthData === null || hasToken) {
-      return this.handleOAuthAuthData(provider);
+  if (providers.length > 0) {
+    let canHandleAuthData = providers.reduce((canHandle, provider) => {
+      var providerAuthData = authData[provider];
+      var hasToken = (providerAuthData && providerAuthData.id);
+      return canHandle && (hasToken || providerAuthData == null);
+    }, true);
+    if (canHandleAuthData) {
+      return this.handleAuthData(authData);
     }
   }
   throw new Parse.Error(Parse.Error.UNSUPPORTED_SERVICE,
                           'This authentication method is unsupported.');
 };
 
-RestWrite.prototype.handleAnonymousAuthData = function() {
-  var anonData = this.data.authData.anonymous;
-  if (anonData === null && this.query) {
-    // We are unlinking the user from the anonymous provider
-    this.data._auth_data_anonymous = null;
-    return;
+RestWrite.prototype.handleAuthDataValidation = function(authData) {
+  let validations = Object.keys(authData).map((provider) => {
+    if (authData[provider] === null) {
+      return Promise.resolve();
+    }
+    let validateAuthData = this.config.authDataManager.getValidatorForProvider(provider);
+    if (!validateAuthData) {
+      throw new Parse.Error(Parse.Error.UNSUPPORTED_SERVICE,
+                            'This authentication method is unsupported.');
+    };
+    return validateAuthData(authData[provider]);
+  });
+  return Promise.all(validations);
+}
+
+RestWrite.prototype.findUsersWithAuthData = function(authData) {
+  let providers = Object.keys(authData);
+  let query = providers.reduce((memo, provider) => {
+    if (!authData[provider]) {
+      return memo;
+    }
+    let queryKey = `authData.${provider}.id`;
+    let query = {};
+    query[queryKey] = authData[provider].id;
+    memo.push(query);
+    return memo;
+  }, []).filter((q) => {
+    return typeof q !== undefined;
+  });
+
+  let findPromise = Promise.resolve([]);
+  if (query.length > 0) {
+     findPromise = this.config.database.find(
+        this.className,
+        {'$or': query}, {})
   }
 
-  // Check if this user already exists
-  return this.config.database.find(
-    this.className,
-    {'authData.anonymous.id': anonData.id}, {})
-  .then((results) => {
+  return findPromise;
+}
+
+
+RestWrite.prototype.handleAuthData = function(authData) {
+  let results;
+  return this.handleAuthDataValidation(authData).then(() => {
+     return this.findUsersWithAuthData(authData);
+  }).then((r) => {
+    results = r;
+    if (results.length > 1) {
+      // More than 1 user with the passed id's
+      throw new Parse.Error(Parse.Error.ACCOUNT_ALREADY_LINKED,
+                              'this auth is already used');
+    }
+
+    this.storage['authProvider'] = Object.keys(authData).join(',');
+
     if (results.length > 0) {
       if (!this.query) {
-        // We're signing up, but this user already exists. Short-circuit
+        // Login with auth data
+        // Short circuit
         delete results[0].password;
+        // need to set the objectId first otherwise location has trailing undefined
+        this.data.objectId = results[0].objectId;
         this.response = {
           response: results[0],
           location: this.location()
         };
-        return;
-      }
-
-      // If this is a PUT for the same user, allow the linking
-      if (results[0].objectId === this.query.objectId) {
-        // Delete the rest format key before saving
-        delete this.data.authData;
-        return;
-      }
-
-      // We're trying to create a duplicate account.  Forbid it
-      throw new Parse.Error(Parse.Error.ACCOUNT_ALREADY_LINKED,
-                            'this auth is already used');
-    }
-
-    // This anonymous user does not already exist, so transform it
-    // to a saveable format
-    this.data._auth_data_anonymous = anonData;
-
-    // Delete the rest format key before saving
-    delete this.data.authData;
-  })
-
-};
-
-RestWrite.prototype.handleOAuthAuthData = function(provider) {
-  var authData = this.data.authData[provider];
-
-  if (authData === null && this.query) {
-    // We are unlinking from the provider.
-    this.data["_auth_data_" + provider ] = null;
-    return;
-  }
-
-  var appIds;
-  var oauthOptions = this.config.oauth[provider];
-  if (oauthOptions) {
-    appIds = oauthOptions.appIds;
-  } else if (provider == "facebook") {
-    appIds = this.config.facebookAppIds;
-  }
-
-  var validateAuthData;
-  var validateAppId;
-
-
-  if (oauth[provider]) {
-    validateAuthData = oauth[provider].validateAuthData;
-    validateAppId = oauth[provider].validateAppId;
-  }
-
-  // Try the configuration methods
-  if (oauthOptions) {
-    if (oauthOptions.module) {
-      validateAuthData = require(oauthOptions.module).validateAuthData;
-      validateAppId = require(oauthOptions.module).validateAppId;
-    };
-
-    if (oauthOptions.validateAuthData) {
-      validateAuthData = oauthOptions.validateAuthData;
-    }
-    if (oauthOptions.validateAppId) {
-      validateAppId = oauthOptions.validateAppId;
-    }
-  }
-  // try the custom provider first, fallback on the oauth implementation
-
-  if (!validateAuthData || !validateAppId) {
-    return false;
-  };
-	
-  return validateAuthData(authData, oauthOptions)
-    .then(() => {
-      if (appIds && typeof validateAppId === "function") {
-        return validateAppId(appIds, authData, oauthOptions);
-      }
-
-      // No validation required by the developer
-      return Promise.resolve();
-
-    }).then(() => {
-      // Check if this user already exists
-      // TODO: does this handle re-linking correctly?
-      var query = {};
-      query['authData.' + provider + '.id'] = authData.id;
-      return this.config.database.find(
-        this.className,
-        query, {});
-    }).then((results) => {
-      this.storage['authProvider'] = provider;
-      if (results.length > 0) {
-        if (!this.query) {
-          // We're signing up, but this user already exists. Short-circuit
-          delete results[0].password;
-          this.response = {
-            response: results[0],
-            location: this.location()
-          };
-          this.data.objectId = results[0].objectId;
-          return;
-        }
-
-        // If this is a PUT for the same user, allow the linking
-        if (results[0].objectId === this.query.objectId) {
-          // Delete the rest format key before saving
-          delete this.data.authData;
-          return;
-        }
-        // We're trying to create a duplicate oauth auth. Forbid it
-        throw new Parse.Error(Parse.Error.ACCOUNT_ALREADY_LINKED,
+      } else if (this.query && this.query.objectId) {
+        // Trying to update auth data but users
+        // are different
+        if (results[0].objectId !== this.query.objectId) {
+          throw new Parse.Error(Parse.Error.ACCOUNT_ALREADY_LINKED,
                               'this auth is already used');
-      } else {
-        this.data.username = cryptoUtils.newToken();
+        }
       }
-
-      // This FB auth does not already exist, so transform it to a
-      // saveable format
-      this.data["_auth_data_" + provider ] = authData;
-
-      // Delete the rest format key before saving
-      delete this.data.authData;
-    });
+    }
+    return Promise.resolve();
+  });
 }
 
 // The non-third-party parts of User transformation
@@ -386,8 +320,7 @@ RestWrite.prototype.transformUser = function() {
     var token = 'r:' + cryptoUtils.newToken();
     this.storage['token'] = token;
     promise = promise.then(() => {
-      var expiresAt = new Date();
-      expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+      var expiresAt = this.config.generateSessionExpiresAt();
       var sessionData = {
         sessionToken: token,
         user: {
@@ -396,11 +329,11 @@ RestWrite.prototype.transformUser = function() {
           objectId: this.objectId()
         },
         createdWith: {
-          'action': 'login',
+          'action': 'signup',
           'authProvider': this.storage['authProvider'] || 'password'
         },
         restricted: false,
-        installationId: this.data.installationId,
+        installationId: this.auth.installationId,
         expiresAt: Parse._encode(expiresAt)
       };
       if (this.response && this.response.response) {
@@ -410,6 +343,11 @@ RestWrite.prototype.transformUser = function() {
                                  '_Session', null, sessionData);
       return create.execute();
     });
+  }
+
+  // If we're updating a _User object, clear the user cache for the session
+  if (this.query && this.auth.user && this.auth.user.getSessionToken()) {
+    cache.users.remove(this.auth.user.getSessionToken());
   }
 
   return promise.then(() => {
@@ -476,7 +414,7 @@ RestWrite.prototype.transformUser = function() {
 
 // Handles any followup logic
 RestWrite.prototype.handleFollowup = function() {
-  
+
   if (this.storage && this.storage['clearSessions']) {
     var sessionQuery = {
       user: {
@@ -489,7 +427,7 @@ RestWrite.prototype.handleFollowup = function() {
     this.config.database.destroy('_Session', sessionQuery)
     .then(this.handleFollowup.bind(this));
   }
-  
+
   if (this.storage && this.storage['sendVerificationEmail']) {
     delete this.storage['sendVerificationEmail'];
     // Fire and forget!
@@ -536,8 +474,7 @@ RestWrite.prototype.handleSession = function() {
 
   if (!this.query && !this.auth.isMaster) {
     var token = 'r:' + cryptoUtils.newToken();
-    var expiresAt = new Date();
-    expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+    var expiresAt = this.config.generateSessionExpiresAt();
     var sessionData = {
       sessionToken: token,
       user: {
@@ -722,10 +659,23 @@ RestWrite.prototype.handleInstallation = function() {
           // device token.
           var delQuery = {
             'deviceToken': this.data.deviceToken,
-            'installationId': {
+          };
+          // We have a unique install Id, use that to preserve
+          // the interesting installation
+          if (this.data.installationId) {
+            delQuery['installationId'] = {
               '$ne': this.data.installationId
             }
-          };
+          } else if (idMatch.objectId && this.data.objectId
+                    && idMatch.objectId == this.data.objectId) {
+            // we passed an objectId, preserve that instalation
+            delQuery['objectId'] = {
+              '$ne': idMatch.objectId
+            }
+          } else {
+            // What to do here? can't really clean up everything...
+            return idMatch.objectId;
+          }
           if (this.data.appIdentifier) {
             delQuery['appIdentifier'] = this.data.appIdentifier;
           }
@@ -767,7 +717,7 @@ RestWrite.prototype.runDatabaseOperation = function() {
     throw new Parse.Error(Parse.Error.SESSION_MISSING,
                           'cannot modify user ' + this.query.objectId);
   }
-  
+
   if (this.className === '_Product' && this.data.download) {
     this.data.downloadName = this.data.download.name;
   }
@@ -779,29 +729,52 @@ RestWrite.prototype.runDatabaseOperation = function() {
   }
 
   if (this.query) {
+    // Force the user to not lockout
+    // Matched with parse.com
+    if (this.className === '_User' && this.data.ACL) {
+      this.data.ACL[this.query.objectId] = { read: true, write: true };
+    }
     // Run an update
     return this.config.database.update(
       this.className, this.query, this.data, this.runOptions).then((resp) => {
         resp.updatedAt = this.updatedAt;
+        if (this.storage['changedByTrigger']) {
+          resp = Object.keys(this.data).reduce((memo, key) => {
+            memo[key] = resp[key] || this.data[key];
+            return memo;
+          }, resp);
+        }
         this.response = {
           response: resp
         };
       });
   } else {
     // Set the default ACL for the new _User
-    if (!this.data.ACL && this.className === '_User') {
-      var ACL = {};
+    if (this.className === '_User') {
+      var ACL = this.data.ACL;
+      // default public r/w ACL
+      if (!ACL) {
+        ACL = {};
+        ACL['*'] = { read: true, write: false };
+      }
+      // make sure the user is not locked down
       ACL[this.data.objectId] = { read: true, write: true };
-      ACL['*'] = { read: true, write: false };
       this.data.ACL = ACL;
-    } 
+    }
+
     // Run a create
     return this.config.database.create(this.className, this.data, this.runOptions)
-      .then(() => {
-        var resp = {
+      .then((resp) => {
+        Object.assign(resp, {
           objectId: this.data.objectId,
           createdAt: this.data.createdAt
-        };
+        });
+        if (this.storage['changedByTrigger']) {
+          resp = Object.keys(this.data).reduce((memo, key) => {
+            memo[key] = resp[key] || this.data[key];
+            return memo;
+          }, resp);
+        }
         if (this.storage['token']) {
           resp.sessionToken = this.storage['token'];
         }
@@ -816,22 +789,39 @@ RestWrite.prototype.runDatabaseOperation = function() {
 
 // Returns nothing - doesn't wait for the trigger.
 RestWrite.prototype.runAfterTrigger = function() {
+  if (!this.response || !this.response.response) {
+    return;
+  }
+
+  // Avoid doing any setup for triggers if there is no 'afterSave' trigger for this class.
+  let hasAfterSaveHook = triggers.triggerExists(this.className, triggers.Types.afterSave, this.config.applicationId);
+  let hasLiveQuery = this.config.liveQueryController.hasLiveQuery(this.className);
+  if (!hasAfterSaveHook && !hasLiveQuery) {
+    return Promise.resolve();
+  }
+
   var extraData = {className: this.className};
   if (this.query && this.query.objectId) {
     extraData.objectId = this.query.objectId;
   }
 
-  // Build the inflated object, different from beforeSave, originalData is not empty
-  // since developers can change data in the beforeSave.
-  var inflatedObject = triggers.inflate(extraData, this.originalData);
-  inflatedObject._finishFetch(this.data);
   // Build the original object, we only do this for a update write.
-  var originalObject;
+  let originalObject;
   if (this.query && this.query.objectId) {
     originalObject = triggers.inflate(extraData, this.originalData);
   }
 
-  triggers.maybeRunTrigger(triggers.Types.afterSave, this.auth, inflatedObject, originalObject, this.config.applicationId);
+  // Build the inflated object, different from beforeSave, originalData is not empty
+  // since developers can change data in the beforeSave.
+  let updatedObject = triggers.inflate(extraData, this.originalData);
+  updatedObject.set(this.sanitizedData());
+  updatedObject._handleSaveResponse(this.response.response, this.response.status || 200);
+
+  // Notifiy LiveQueryServer if possible
+  this.config.liveQueryController.onAfterSave(updatedObject.className, updatedObject, originalObject);
+
+  // Run afterSave trigger
+  triggers.maybeRunTrigger(triggers.Types.afterSave, this.auth, updatedObject, originalObject, this.config.applicationId);
 };
 
 // A helper to figure out what location this operation happens at.
@@ -845,6 +835,34 @@ RestWrite.prototype.location = function() {
 // Because it could be either on the query or on the data
 RestWrite.prototype.objectId = function() {
   return this.data.objectId || this.query.objectId;
+};
+
+// Returns a copy of the data and delete bad keys (_auth_data, _hashed_password...)
+RestWrite.prototype.sanitizedData = function() {
+  let data = Object.keys(this.data).reduce((data, key) => {
+    // Regexp comes from Parse.Object.prototype.validate
+    if (!(/^[A-Za-z][0-9A-Za-z_]*$/).test(key)) {
+      delete data[key];
+    }
+    return data;
+  }, deepcopy(this.data));
+  return Parse._decode(undefined, data);
+}
+
+RestWrite.prototype.cleanUserAuthData = function() {
+  if (this.response && this.response.response && this.className === '_User') {
+    let user = this.response.response;
+    if (user.authData) {
+      Object.keys(user.authData).forEach((provider) => {
+        if (user.authData[provider] === null) {
+          delete user.authData[provider];
+        }
+      });
+      if (Object.keys(user.authData).length == 0) {
+        delete user.authData;
+      }
+    }
+  }
 };
 
 export default RestWrite;

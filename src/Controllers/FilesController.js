@@ -9,15 +9,15 @@ import mime from 'mime';
 export class FilesController extends AdaptableController {
 
   getFileData(config, filename) {
-    return this.adapter.getFileData(config, filename);
+    return this.adapter.getFileData(filename);
   }
 
   createFile(config, filename, data, contentType) {
-    
+
     let extname = path.extname(filename);
-    
+
     const hasExtension = extname.length > 0;
-    
+
     if (!hasExtension && contentType && mime.extension(contentType)) {
       filename = filename + '.' + mime.extension(contentType);
     } else if (hasExtension && !contentType) {
@@ -27,7 +27,7 @@ export class FilesController extends AdaptableController {
     filename = randomHexString(32) + '_' + filename;
 
     var location = this.adapter.getFileLocation(config, filename);
-    return this.adapter.createFile(config, filename, data, contentType).then(() => {
+    return this.adapter.createFile(filename, data, contentType).then(() => {
       return Promise.resolve({
         url: location,
         name: filename
@@ -36,7 +36,7 @@ export class FilesController extends AdaptableController {
   }
 
   deleteFile(config, filename) {
-    return this.adapter.deleteFile(config, filename);
+    return this.adapter.deleteFile(filename);
   }
 
   /**

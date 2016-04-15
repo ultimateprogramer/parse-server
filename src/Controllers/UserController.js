@@ -1,7 +1,8 @@
-import { randomString } from '../cryptoUtils';
-import { inflate } from '../triggers';
+import { randomString }    from '../cryptoUtils';
+import { inflate }         from '../triggers';
 import AdaptableController from './AdaptableController';
-import MailAdapter from '../Adapters/Email/MailAdapter';
+import MailAdapter         from '../Adapters/Email/MailAdapter';
+import rest                from '../rest';
 
 var DatabaseAdapter = require('../DatabaseAdapter');
 var RestWrite = require('../RestWrite');
@@ -22,63 +23,53 @@ export class UserController extends AdaptableController {
     }
     super.validateAdapter(adapter);
   }
-  
+
   expectedAdapterType() {
     return MailAdapter;
   }
-  
+
   get shouldVerifyEmails() {
     return this.options.verifyUserEmails;
   }
-  
+
   setEmailVerifyToken(user) {
     if (this.shouldVerifyEmails) {
       user._email_verify_token = randomString(25);
       user.emailVerified = false;
     }
   }
-  
-  
+
   verifyEmail(username, token) {
     if (!this.shouldVerifyEmails) {
       // Trying to verify email when not enabled
       // TODO: Better error here.
       return Promise.reject();
     }
+    let database = this.config.database.WithoutValidation();
+    return database.update('_User', {
+      username: username,
+      _email_verify_token: token
+    }, {emailVerified: true}).then(document => {
+      if (!document) {
+        return Promise.reject();
+      }
+      return Promise.resolve(document);
+    });
+  }
 
-    return this.config.database
-      .adaptiveCollection('_User')
-      .then(collection => {
-        // Need direct database access because verification token is not a parse field
-        return collection.findOneAndUpdate({
-          username: username,
-          _email_verify_token: token
-        }, {$set: {emailVerified: true}});
-      })
-      .then(document => {
-        if (!document) {
-          return Promise.reject();
-        }
-        return document;
-      });
-  }
-  
   checkResetTokenValidity(username, token) {
-    return this.config.database.adaptiveCollection('_User')
-      .then(collection => {
-          return collection.find({
-            username: username,
-            _perishable_token: token
-          }, { limit: 1 });
-        })
-      .then(results => {
-        if (results.length != 1) {
-          return Promise.reject();
-        }
-        return results[0];
-      });
+    let database = this.config.database.WithoutValidation();
+    return database.find('_User', {
+      username: username,
+      _perishable_token: token
+    }, {limit: 1}).then(results => {
+      if (results.length != 1) {
+        return Promise.reject();
+      }
+      return results[0];
+    });
   }
-  
+
   getUserIfNeeded(user) {
     if (user.username && user.email) {
       return Promise.resolve(user);
@@ -90,7 +81,7 @@ export class UserController extends AdaptableController {
     if (user.email) {
       where.email = user.email;
     }
-    
+
     var query = new RestQuery(this.config, Auth.master(this.config), '_User', where);
     return query.execute().then(function(result){
       if (result.results.length != 1) {
@@ -99,15 +90,14 @@ export class UserController extends AdaptableController {
       return result.results[0];
     })
   }
-  
 
   sendVerificationEmail(user) {
     if (!this.shouldVerifyEmails) {
       return;
     }
+    const token = encodeURIComponent(user._email_verify_token);
     // We may need to fetch the user in case of update email
     this.getUserIfNeeded(user).then((user) => {
-      const token = encodeURIComponent(user._email_verify_token);
       const username = encodeURIComponent(user.username);
       let link = `${this.config.verifyEmailURL}?token=${token}&username=${username}`;
       let options = {
@@ -122,18 +112,11 @@ export class UserController extends AdaptableController {
       }
     });
   }
-  
+
   setPasswordResetToken(email) {
     let token = randomString(25);
-    return this.config.database
-      .adaptiveCollection('_User')
-      .then(collection => {
-        // Need direct database access because verification token is not a parse field
-        return collection.findOneAndUpdate(
-          { email: email}, // query
-          { $set: { _perishable_token: token } } // update
-        );
-      });
+    let database = this.config.database.WithoutValidation();
+    return database.update('_User', {email: email}, {_perishable_token: token});
   }
 
   sendPasswordResetEmail(email) {
@@ -142,11 +125,11 @@ export class UserController extends AdaptableController {
       //  TODO: No adapter?
       return;
     }
-    
+
     return this.setPasswordResetToken(email).then((user) => {
 
       const token = encodeURIComponent(user._perishable_token);
-      const username = encodeURIComponent(user.username);    
+      const username = encodeURIComponent(user.username);
       let link = `${this.config.requestResetPasswordURL}?token=${token}&username=${username}`
 
       let options = {
@@ -154,7 +137,7 @@ export class UserController extends AdaptableController {
         link: link,
         user: inflate('_User', user),
       };
-      
+
       if (this.adapter.sendPasswordResetEmail) {
         this.adapter.sendPasswordResetEmail(options);
       } else {
@@ -164,25 +147,30 @@ export class UserController extends AdaptableController {
       return Promise.resolve(user);
     });
   }
-  
+
   updatePassword(username, token, password, config) {
-   return this.checkResetTokenValidity(username, token).then(() => {
-     return updateUserPassword(username, token, password, this.config);
-   });
+   return this.checkResetTokenValidity(username, token).then((user) => {
+     return updateUserPassword(user.objectId, password, this.config);
+   }).then(() => {
+      // clear reset password token
+      return this.config.database.WithoutValidation().update('_User', { username }, {
+        _perishable_token: {__op: 'Delete'}
+      });
+    });
   }
-  
+
   defaultVerificationEmail({link, user, appName, }) {
     let text = "Hi,\n\n" +
-	      "You are being asked to confirm the e-mail address " + user.email + " with " + appName + "\n\n" +
+	      "You are being asked to confirm the e-mail address " + user.get("email") + " with " + appName + "\n\n" +
 	      "" +
 	      "Click here to confirm it:\n" + link;
     let to = user.get("email");
     let subject = 'Please verify your e-mail for ' + appName;
     return { text, to, subject };
   }
-  
+
   defaultResetPasswordEmail({link, user, appName, }) {
-    let text = "Hi,\n\n" + 
+    let text = "Hi,\n\n" +
         "You requested to reset your password for " + appName + ".\n\n" +
         "" +
         "Click here to reset it:\n" + link;
@@ -193,12 +181,10 @@ export class UserController extends AdaptableController {
 }
 
 // Mark this private
-function updateUserPassword(username, token, password, config) { 
-    var write = new RestWrite(config, Auth.master(config), '_User', {
-            username: username, 
-            _perishable_token: token
-          }, {password: password, _perishable_token: null }, undefined);
-    return write.execute();
+function updateUserPassword(userId, password, config) {
+    return rest.update(config, Auth.master(config), '_User', userId, {
+      password: password
+    });
  }
 
 export default UserController;

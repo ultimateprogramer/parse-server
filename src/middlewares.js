@@ -1,4 +1,5 @@
 import cache from './cache';
+import log   from './logger';
 
 var Parse = require('parse/node').Parse;
 
@@ -89,7 +90,7 @@ function handleParseHeaders(req, res, next) {
   var isMaster = (info.masterKey === req.config.masterKey);
 
   if (isMaster) {
-    req.auth = new auth.Auth(req.config, true);
+    req.auth = new auth.Auth({ config: req.config, installationId: info.installationId, isMaster: true });
     next();
     return;
   }
@@ -97,7 +98,7 @@ function handleParseHeaders(req, res, next) {
   // Client keys are not required in parse-server, but if any have been configured in the server, validate them
   //  to preserve original behavior.
   let keys = ["clientKey", "javascriptKey", "dotNetKey", "restAPIKey"];
-  
+
   // We do it with mismatching keys to support no-keys config
   var keyMismatch = keys.reduce(function(mismatch, key){
 
@@ -107,30 +108,36 @@ function handleParseHeaders(req, res, next) {
     }
     return mismatch;
   }, 0);
-  
+
   // All keys mismatch
   if (keyMismatch == keys.length) {
     return invalidRequest(req, res);
   }
 
   if (!info.sessionToken) {
-    req.auth = new auth.Auth(req.config, false);
+    req.auth = new auth.Auth({ config: req.config, installationId: info.installationId, isMaster: false });
     next();
     return;
   }
 
-  return auth.getAuthForSessionToken(
-    req.config, info.sessionToken).then((auth) => {
+  return auth.getAuthForSessionToken({ config: req.config, installationId: info.installationId, sessionToken: info.sessionToken })
+    .then((auth) => {
       if (auth) {
         req.auth = auth;
         next();
       }
-    }).catch((error) => {
-      // TODO: Determine the correct error scenario.
-      console.log(error);
-      throw new Parse.Error(Parse.Error.UNKNOWN_ERROR, error);
+    })
+    .catch((error) => {
+      if(error instanceof Parse.Error) {
+        next(error);
+        return;
+      }
+      else {
+        // TODO: Determine the correct error scenario.
+        log.error('error getting auth for sessionToken', error);
+        throw new Parse.Error(Parse.Error.UNKNOWN_ERROR, error);
+      }
     });
-
 }
 
 var allowCrossDomain = function(req, res, next) {
@@ -178,7 +185,7 @@ var handleParseErrors = function(err, req, res, next) {
     res.status(err.status);
     res.json({error: err.message});
   } else {
-    console.log('Uncaught internal server error.', err, err.stack);
+    log.error('Uncaught internal server error.', err, err.stack);
     res.status(500);
     res.json({code: Parse.Error.INTERNAL_SERVER_ERROR,
               message: 'Internal server error.'});

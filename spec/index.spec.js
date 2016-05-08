@@ -332,5 +332,33 @@ describe('server', () => {
       sessionLength: '0'
     })).toThrow('Session length must be a value greater than 0.');
     done();
+  });
+
+  it('ignores the session length when expireInactiveSessions set to false', (done) => {
+    expect(() => setServerConfiguration({
+      serverURL: 'http://localhost:8378/1',
+      appId: 'test',
+      appName: 'unused',
+      javascriptKey: 'test',
+      masterKey: 'test',
+      sessionLength: '-33',
+      expireInactiveSessions: false
+    })).not.toThrow();
+
+    expect(() => setServerConfiguration({
+      serverURL: 'http://localhost:8378/1',
+      appId: 'test',
+      appName: 'unused',
+      javascriptKey: 'test',
+      masterKey: 'test',
+      sessionLength: '0',
+      expireInactiveSessions: false
+    })).not.toThrow();
+    done();
   })
+
+  it('fails if you try to set revokeSessionOnPasswordReset to non-boolean', done => {
+    expect(() => setServerConfiguration({ revokeSessionOnPasswordReset: 'non-bool' })).toThrow();
+    done();
+  });
 });

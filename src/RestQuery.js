@@ -1,7 +1,7 @@
 // An object that encapsulates everything we need to run a 'find'
 // operation, encoded in the REST API format.
 
-var Schema = require('./Schema');
+var SchemaController = require('./Controllers/SchemaController');
 var Parse = require('parse/node').Parse;
 
 import { default as FilesController } from './Controllers/FilesController';
@@ -171,7 +171,7 @@ RestQuery.prototype.redirectClassNameForKey = function() {
 
 // Validates this operation against the allowClientClassCreation config.
 RestQuery.prototype.validateClientClassCreation = function() {
-  let sysClass = Schema.systemClasses;
+  let sysClass = SchemaController.systemClasses;
   if (this.config.allowClientClassCreation === false && !this.auth.isMaster
       && sysClass.indexOf(this.className) === -1) {
     return this.config.database.collectionExists(this.className).then((hasClass) => {
@@ -325,6 +325,10 @@ RestQuery.prototype.replaceDontSelect = function() {
 // Returns a promise for whether it was successful.
 // Populates this.response with an object that only has 'results'.
 RestQuery.prototype.runFind = function() {
+  if (this.findOptions.limit === 0) {
+    this.response = {results: []};
+    return Promise.resolve();
+  }
   return this.config.database.find(
     this.className, this.restWhere, this.findOptions).then((results) => {
     if (this.className === '_User') {

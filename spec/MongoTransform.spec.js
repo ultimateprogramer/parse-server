@@ -106,7 +106,7 @@ describe('parseObjectToMongoObjectForCreate', () => {
 
 describe('transformWhere', () => {
   it('objectId', (done) => {
-    var out = transform.transformWhere(dummySchema, null, {objectId: 'foo'});
+    var out = transform.transformWhere(null, {objectId: 'foo'});
     expect(out._id).toEqual('foo');
     done();
   });
@@ -115,7 +115,7 @@ describe('transformWhere', () => {
     var input = {
       objectId: {'$in': ['one', 'two', 'three']},
     };
-    var output = transform.transformWhere(dummySchema, null, input);
+    var output = transform.transformWhere(null, input);
     jequal(input.objectId, output._id);
     done();
   });
@@ -191,17 +191,6 @@ describe('untransformObject', () => {
   });
 });
 
-describe('transformKey', () => {
-  it('throws out _password', (done) => {
-    try {
-      transform.transformKey(dummySchema, '_User', '_password');
-      fail('should have thrown');
-    } catch (e) {
-      done();
-    }
-  });
-});
-
 describe('transform schema key changes', () => {
 
   it('changes new pointer key', (done) => {
@@ -243,6 +232,21 @@ describe('transform schema key changes', () => {
     expect(output._wperm[0]).toEqual('Kevin');
     done();
   });
+
+  it('writes the old ACL format in addition to rperm and wperm', (done) => {
+    var input = {
+      ACL: {
+        "*": { "read": true },
+        "Kevin": { "write": true }
+      }
+    };
+
+    var output = transform.parseObjectToMongoObjectForCreate(dummySchema, null, input);
+    expect(typeof output._acl).toEqual('object');
+    expect(output._acl["Kevin"].w).toBeTruthy();
+    expect(output._acl["Kevin"].r).toBeUndefined();
+    done();
+  })
 
   it('untransforms from _rperm and _wperm to ACL', (done) => {
     var input = {

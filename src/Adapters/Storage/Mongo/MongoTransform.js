@@ -19,7 +19,7 @@ const transformKey = (className, fieldName, schema) => {
   return fieldName;
 }
 
-const transformKeyValueForUpdate = (schema, className, restKey, restValue) => {
+const transformKeyValueForUpdate = (className, restKey, restValue, parseFormatSchema) => {
   // Check if the schema is known since it's a built-in field.
   var key = restKey;
   var timeField = false;
@@ -38,12 +38,6 @@ const transformKeyValueForUpdate = (schema, className, restKey, restValue) => {
     key = '_updated_at';
     timeField = true;
     break;
-  case '_email_verify_token':
-    key = "_email_verify_token";
-    break;
-  case '_perishable_token':
-    key = "_perishable_token";
-    break;
   case 'sessionToken':
   case '_session_token':
     key = '_session_token';
@@ -57,26 +51,9 @@ const transformKeyValueForUpdate = (schema, className, restKey, restValue) => {
   case '_wperm':
     return {key: key, value: restValue};
     break;
-  case '$or':
-    throw new Parse.Error(Parse.Error.INVALID_KEY_NAME, 'you can only use $or in queries');
-  case '$and':
-    throw new Parse.Error(Parse.Error.INVALID_KEY_NAME, 'you can only use $and in queries');
-  default:
-    // Other auth data
-    var authDataMatch = key.match(/^authData\.([a-zA-Z0-9_]+)\.id$/);
-    if (authDataMatch) {
-      throw new Parse.Error(Parse.Error.INVALID_KEY_NAME, 'can only query on ' + key);
-    }
   }
 
-  // Handle special schema key changes
-  // TODO: it seems like this is likely to have edge cases where
-  // pointer types are missed
-  var expected = undefined;
-  if (schema && schema.getExpectedType) {
-    expected = schema.getExpectedType(className, key);
-  }
-  if ((expected && expected.type == 'Pointer') || (!expected && restValue && restValue.__type == 'Pointer')) {
+  if ((parseFormatSchema.fields[key] && parseFormatSchema.fields[key].type === 'Pointer') || (!parseFormatSchema.fields[key] && restValue && restValue.__type == 'Pointer')) {
     key = '_p_' + key;
   }
 
@@ -101,15 +78,12 @@ const transformKeyValueForUpdate = (schema, className, restKey, restValue) => {
   }
 
   // Handle normal objects by recursing
-  if (Object.keys(restValue).some(key => key.includes('$') || key.includes('.'))) {
-    throw new Parse.Error(Parse.Error.INVALID_NESTED_KEY, "Nested keys should not contain the '$' or '.' characters");
-  }
   value = _.mapValues(restValue, transformInteriorValue);
   return {key, value};
 }
 
 const transformInteriorValue = restValue => {
-  if (typeof restValue === 'object' && Object.keys(restValue).some(key => key.includes('$') || key.includes('.'))) {
+  if (restValue !== null && typeof restValue === 'object' && Object.keys(restValue).some(key => key.includes('$') || key.includes('.'))) {
     throw new Parse.Error(Parse.Error.INVALID_NESTED_KEY, "Nested keys should not contain the '$' or '.' characters");
   }
   // Handle atomic values
@@ -141,7 +115,7 @@ const valueAsDate = value => {
   return false;
 }
 
-function transformQueryKeyValue(className, key, value, { validate } = {}, schema) {
+function transformQueryKeyValue(className, key, value, schema) {
   switch(key) {
   case 'createdAt':
     if (valueAsDate(value)) {
@@ -167,15 +141,9 @@ function transformQueryKeyValue(className, key, value, { validate } = {}, schema
   case '_perishable_token':
   case '_email_verify_token': return {key, value}
   case '$or':
-    if (!(value instanceof Array)) {
-      throw new Parse.Error(Parse.Error.INVALID_QUERY, 'bad $or format - use an array value');
-    }
-    return {key: '$or', value: value.map(subQuery => transformWhere(className, subQuery, {}, schema))};
+    return {key: '$or', value: value.map(subQuery => transformWhere(className, subQuery, schema))};
   case '$and':
-    if (!(value instanceof Array)) {
-      throw new Parse.Error(Parse.Error.INVALID_QUERY, 'bad $and format - use an array value');
-    }
-    return {key: '$and', value: value.map(subQuery => transformWhere(className, subQuery, {}, schema))};
+    return {key: '$and', value: value.map(subQuery => transformWhere(className, subQuery, schema))};
   default:
     // Other auth data
     const authDataMatch = key.match(/^authData\.([a-zA-Z0-9_]+)\.id$/);
@@ -183,9 +151,6 @@ function transformQueryKeyValue(className, key, value, { validate } = {}, schema
       const provider = authDataMatch[1];
       // Special-case auth data.
       return {key: `_auth_data_${provider}.id`, value};
-    }
-    if (validate && !key.match(/^[a-zA-Z][a-zA-Z0-9_\.]*$/)) {
-      throw new Parse.Error(Parse.Error.INVALID_KEY_NAME, 'invalid key name: ' + key);
     }
   }
 
@@ -223,39 +188,21 @@ function transformQueryKeyValue(className, key, value, { validate } = {}, schema
 // Main exposed method to help run queries.
 // restWhere is the "where" clause in REST API form.
 // Returns the mongo form of the query.
-// Throws a Parse.Error if the input query is invalid.
-function transformWhere(className, restWhere, { validate = true } = {}, schema) {
+function transformWhere(className, restWhere, schema) {
   let mongoWhere = {};
-  if (restWhere['ACL']) {
-    throw new Parse.Error(Parse.Error.INVALID_QUERY, 'Cannot query on ACL.');
-  }
   for (let restKey in restWhere) {
-    let out = transformQueryKeyValue(className, restKey, restWhere[restKey], { validate }, schema);
+    let out = transformQueryKeyValue(className, restKey, restWhere[restKey], schema);
     mongoWhere[out.key] = out.value;
   }
   return mongoWhere;
 }
 
-const parseObjectKeyValueToMongoObjectKeyValue = (
-  schema,
-  className,
-  restKey,
-  restValue,
-  parseFormatSchema
-) => {
+const parseObjectKeyValueToMongoObjectKeyValue = (restKey, restValue, schema) => {
   // Check if the schema is known since it's a built-in field.
   let transformedValue;
   let coercedToDate;
   switch(restKey) {
   case 'objectId': return {key: '_id', value: restValue};
-  case 'createdAt':
-    transformedValue = transformTopLevelAtom(restValue);
-    coercedToDate = typeof transformedValue === 'string' ? new Date(transformedValue) : transformedValue
-    return {key: '_created_at', value: coercedToDate};
-  case 'updatedAt':
-    transformedValue = transformTopLevelAtom(restValue);
-    coercedToDate = typeof transformedValue === 'string' ? new Date(transformedValue) : transformedValue
-    return {key: '_updated_at', value: coercedToDate};
   case 'expiresAt':
     transformedValue = transformTopLevelAtom(restValue);
     coercedToDate = typeof transformedValue === 'string' ? new Date(transformedValue) : transformedValue
@@ -280,7 +227,7 @@ const parseObjectKeyValueToMongoObjectKeyValue = (
   if (restValue && restValue.__type !== 'Bytes') {
     //Note: We may not know the type of a field here, as the user could be saving (null) to a field
     //That never existed before, meaning we can't infer the type.
-    if (parseFormatSchema.fields[restKey] && parseFormatSchema.fields[restKey].type == 'Pointer' || restValue.__type == 'Pointer') {
+    if (schema.fields[restKey] && schema.fields[restKey].type == 'Pointer' || restValue.__type == 'Pointer') {
       restKey = '_p_' + restKey;
     }
   }
@@ -303,11 +250,6 @@ const parseObjectKeyValueToMongoObjectKeyValue = (
     return {key: restKey, value: value};
   }
 
-  // Handle update operators. TODO: handle within Parse Server. DB adapter shouldn't see update operators in creates.
-  if (typeof restValue === 'object' && '__op' in restValue) {
-    return {key: restKey, value: transformUpdateOperator(restValue, true)};
-  }
-
   // Handle normal objects by recursing
   if (Object.keys(restValue).some(key => key.includes('$') || key.includes('.'))) {
     throw new Parse.Error(Parse.Error.INVALID_NESTED_KEY, "Nested keys should not contain the '$' or '.' characters");
@@ -316,54 +258,51 @@ const parseObjectKeyValueToMongoObjectKeyValue = (
   return {key: restKey, value};
 }
 
-// Main exposed method to create new objects.
-// restCreate is the "create" clause in REST API form.
-function parseObjectToMongoObjectForCreate(schema, className, restCreate, parseFormatSchema) {
-  if (className == '_User') {
-     restCreate = transformAuthData(restCreate);
-  }
-  var mongoCreate = transformACL(restCreate);
+const parseObjectToMongoObjectForCreate = (className, restCreate, schema) => {
+  restCreate = addLegacyACL(restCreate);
+  let mongoCreate = {}
   for (let restKey in restCreate) {
     let { key, value } = parseObjectKeyValueToMongoObjectKeyValue(
-      schema,
-      className,
       restKey,
       restCreate[restKey],
-      parseFormatSchema
+      schema
     );
     if (value !== undefined) {
       mongoCreate[key] = value;
     }
   }
+
+  // Use the legacy mongo format for createdAt and updatedAt
+  if (mongoCreate.createdAt) {
+    mongoCreate._created_at = new Date(mongoCreate.createdAt.iso || mongoCreate.createdAt);
+    delete mongoCreate.createdAt;
+  }
+  if (mongoCreate.updatedAt) {
+    mongoCreate._updated_at = new Date(mongoCreate.updatedAt.iso || mongoCreate.updatedAt);
+    delete mongoCreate.updatedAt;
+  }
+
   return mongoCreate;
 }
 
 // Main exposed method to help update old objects.
-function transformUpdate(schema, className, restUpdate) {
-  if (!restUpdate) {
-    throw 'got empty restUpdate';
-  }
-  if (className == '_User') {
-    restUpdate = transformAuthData(restUpdate);
-  }
-
-  var mongoUpdate = {};
-  var acl = transformACL(restUpdate);
-  if (acl._rperm || acl._wperm || acl._acl) {
-    mongoUpdate['$set'] = {};
+const transformUpdate = (className, restUpdate, parseFormatSchema) => {
+  let mongoUpdate = {};
+  let acl = addLegacyACL(restUpdate)._acl;
+  if (acl) {
+    mongoUpdate.$set = {};
     if (acl._rperm) {
-      mongoUpdate['$set']['_rperm'] = acl._rperm;
+      mongoUpdate.$set._rperm = acl._rperm;
     }
     if (acl._wperm) {
-      mongoUpdate['$set']['_wperm'] = acl._wperm;
+      mongoUpdate.$set._wperm = acl._wperm;
     }
     if (acl._acl) {
-      mongoUpdate['$set']['_acl'] = acl._acl;
+      mongoUpdate.$set._acl = acl._acl;
     }
   }
-
   for (var restKey in restUpdate) {
-    var out = transformKeyValueForUpdate(schema, className, restKey, restUpdate[restKey]);
+    var out = transformKeyValueForUpdate(className, restKey, restUpdate[restKey], parseFormatSchema);
 
     // If the output value is an object with any $ keys, it's an
     // operator that needs to be lifted onto the top level update
@@ -380,83 +319,34 @@ function transformUpdate(schema, className, restUpdate) {
   return mongoUpdate;
 }
 
-function transformAuthData(restObject) {
-  if (restObject.authData) {
-    Object.keys(restObject.authData).forEach((provider) => {
-      let providerData = restObject.authData[provider];
-      if (providerData == null) {
-        restObject[`_auth_data_${provider}`] = {
-          __op: 'Delete'
-        }
+// Add the legacy _acl format.
+const addLegacyACL = restObject => {
+  let restObjectCopy = {...restObject};
+  let _acl = {};
+
+  if (restObject._wperm) {
+    restObject._wperm.forEach(entry => {
+      _acl[entry] = { w: true };
+    });
+  }
+
+  if (restObject._rperm) {
+    restObject._rperm.forEach(entry => {
+      if (!(entry in _acl)) {
+        _acl[entry] = { r: true };
       } else {
-        restObject[`_auth_data_${provider}`] = providerData;
+        _acl[entry].r = true;
       }
     });
-    delete restObject.authData;
   }
-  return restObject;
+
+  if (Object.keys(_acl).length > 0) {
+    restObjectCopy._acl = _acl;
+  }
+
+  return restObjectCopy;
 }
 
-// Transforms a REST API formatted ACL object to our two-field mongo format.
-// This mutates the restObject passed in to remove the ACL key.
-function transformACL(restObject) {
-  var output = {};
-  if (!restObject['ACL']) {
-    return output;
-  }
-  var acl = restObject['ACL'];
-  var rperm = [];
-  var wperm = [];
-  var _acl = {}; // old format
-
-  for (var entry in acl) {
-    if (acl[entry].read) {
-      rperm.push(entry);
-      _acl[entry] = _acl[entry] || {};
-      _acl[entry]['r'] = true;
-    }
-    if (acl[entry].write) {
-      wperm.push(entry);
-      _acl[entry] = _acl[entry] || {};
-      _acl[entry]['w'] = true;
-    }
-  }
-  output._rperm = rperm;
-  output._wperm = wperm;
-  output._acl = _acl;
-  delete restObject.ACL;
-  return output;
-}
-
-// Transforms a mongo format ACL to a REST API format ACL key
-// This mutates the mongoObject passed in to remove the _rperm/_wperm keys
-function untransformACL(mongoObject) {
-  var output = {};
-  if (!mongoObject['_rperm'] && !mongoObject['_wperm']) {
-    return output;
-  }
-  var acl = {};
-  var rperm = mongoObject['_rperm'] || [];
-  var wperm = mongoObject['_wperm'] || [];
-  rperm.map((entry) => {
-    if (!acl[entry]) {
-      acl[entry] = {read: true};
-    } else {
-      acl[entry]['read'] = true;
-    }
-  });
-  wperm.map((entry) => {
-    if (!acl[entry]) {
-      acl[entry] = {write: true};
-    } else {
-      acl[entry]['write'] = true;
-    }
-  });
-  output['ACL'] = acl;
-  delete mongoObject._rperm;
-  delete mongoObject._wperm;
-  return output;
-}
 
 // A sentinel value that helper transformations return when they
 // cannot perform a transformation
@@ -598,13 +488,7 @@ function transformConstraint(constraint, inArray) {
       break;
 
     case '$options':
-      var options = constraint[key];
-      if (!answer['$regex'] || (typeof options !== 'string')
-          || !options.match(/^[imxs]+$/)) {
-        throw new Parse.Error(Parse.Error.INVALID_QUERY,
-                              'got a bad $options');
-      }
-      answer[key] = options;
+      answer[key] = constraint[key];
       break;
 
     case '$nearSphere':
@@ -726,25 +610,7 @@ function transformUpdateOperator({
   }
 }
 
-const specialKeysForUntransform = [
-  '_id',
-  '_hashed_password',
-  '_acl',
-  '_email_verify_token',
-  '_perishable_token',
-  '_tombstone',
-  '_session_token',
-  'updatedAt',
-  '_updated_at',
-  'createdAt',
-  '_created_at',
-  'expiresAt',
-  '_expiresAt',
-];
-
-// Converts from a mongo-format object to a REST-format object.
-// Does not strip out anything based on a lack of authentication.
-function untransformObject(schema, className, mongoObject, isNestedObject = false) {
+const nestedMongoObjectToNestedParseObject = mongoObject => {
   switch(typeof mongoObject) {
   case 'string':
   case 'number':
@@ -753,15 +619,13 @@ function untransformObject(schema, className, mongoObject, isNestedObject = fals
   case 'undefined':
   case 'symbol':
   case 'function':
-    throw 'bad value in untransformObject';
+    throw 'bad value in mongoObjectToParseObject';
   case 'object':
     if (mongoObject === null) {
       return null;
     }
     if (mongoObject instanceof Array) {
-      return mongoObject.map(arrayEntry => {
-        return untransformObject(schema, className, arrayEntry, true);
-      });
+      return mongoObject.map(nestedMongoObjectToNestedParseObject);
     }
 
     if (mongoObject instanceof Date) {
@@ -780,18 +644,63 @@ function untransformObject(schema, className, mongoObject, isNestedObject = fals
       return BytesCoder.databaseToJSON(mongoObject);
     }
 
-    var restObject = untransformACL(mongoObject);
+    return _.mapValues(mongoObject, nestedMongoObjectToNestedParseObject);
+  default:
+    throw 'unknown js type';
+  }
+}
+
+// Converts from a mongo-format object to a REST-format object.
+// Does not strip out anything based on a lack of authentication.
+const mongoObjectToParseObject = (className, mongoObject, schema) => {
+  switch(typeof mongoObject) {
+  case 'string':
+  case 'number':
+  case 'boolean':
+    return mongoObject;
+  case 'undefined':
+  case 'symbol':
+  case 'function':
+    throw 'bad value in mongoObjectToParseObject';
+  case 'object':
+    if (mongoObject === null) {
+      return null;
+    }
+    if (mongoObject instanceof Array) {
+      return mongoObject.map(nestedMongoObjectToNestedParseObject);
+    }
+
+    if (mongoObject instanceof Date) {
+      return Parse._encode(mongoObject);
+    }
+
+    if (mongoObject instanceof mongodb.Long) {
+      return mongoObject.toNumber();
+    }
+
+    if (mongoObject instanceof mongodb.Double) {
+      return mongoObject.value;
+    }
+
+    if (BytesCoder.isValidDatabaseObject(mongoObject)) {
+      return BytesCoder.databaseToJSON(mongoObject);
+    }
+
+    let restObject = {};
+    if (mongoObject._rperm || mongoObject._wperm) {
+      restObject._rperm = mongoObject._rperm || [];
+      restObject._wperm = mongoObject._wperm || [];
+      delete mongoObject._rperm;
+      delete mongoObject._wperm;
+    }
+
     for (var key in mongoObject) {
-      if (isNestedObject && _.includes(specialKeysForUntransform, key)) {
-        restObject[key] = untransformObject(schema, className, mongoObject[key], true);
-        continue;
-      }
       switch(key) {
       case '_id':
         restObject['objectId'] = '' + mongoObject[key];
         break;
       case '_hashed_password':
-        restObject['password'] = mongoObject[key];
+        restObject._hashed_password = mongoObject[key];
         break;
       case '_acl':
       case '_email_verify_token':
@@ -825,17 +734,11 @@ function untransformObject(schema, className, mongoObject, isNestedObject = fals
 
         if (key.indexOf('_p_') == 0) {
           var newKey = key.substring(3);
-          var expected;
-          if (schema && schema.getExpectedType) {
-            expected = schema.getExpectedType(className, newKey);
-          }
-          if (!expected) {
-            log.info('transform.js',
-              'Found a pointer column not in the schema, dropping it.',
-              className, newKey);
+          if (!schema.fields[newKey]) {
+            log.info('transform.js', 'Found a pointer column not in the schema, dropping it.', className, newKey);
             break;
           }
-          if (expected && expected.type !== 'Pointer') {
+          if (schema.fields[newKey].type !== 'Pointer') {
             log.info('transform.js', 'Found a pointer in a non-pointer column, dropping it.', className, key);
             break;
           }
@@ -843,8 +746,7 @@ function untransformObject(schema, className, mongoObject, isNestedObject = fals
             break;
           }
           var objData = mongoObject[key].split('$');
-          var newClass = (expected ? expected.targetClass : objData[0]);
-          if (objData[0] !== newClass) {
+          if (objData[0] !== schema.fields[newKey].targetClass) {
             throw 'pointer to incorrect className';
           }
           restObject[newKey] = {
@@ -853,91 +755,35 @@ function untransformObject(schema, className, mongoObject, isNestedObject = fals
             objectId: objData[1]
           };
           break;
-        } else if (!isNestedObject && key[0] == '_' && key != '__type') {
+        } else if (key[0] == '_' && key != '__type') {
           throw ('bad key in untransform: ' + key);
         } else {
-          var expectedType = schema.getExpectedType(className, key);
           var value = mongoObject[key];
-          if (expectedType && expectedType.type === 'File' && FileCoder.isValidDatabaseObject(value)) {
+          if (schema.fields[key] && schema.fields[key].type === 'File' && FileCoder.isValidDatabaseObject(value)) {
             restObject[key] = FileCoder.databaseToJSON(value);
             break;
           }
-          if (expectedType && expectedType.type === 'GeoPoint' && GeoPointCoder.isValidDatabaseObject(value)) {
+          if (schema.fields[key] && schema.fields[key].type === 'GeoPoint' && GeoPointCoder.isValidDatabaseObject(value)) {
             restObject[key] = GeoPointCoder.databaseToJSON(value);
             break;
           }
         }
-        restObject[key] = untransformObject(schema, className, mongoObject[key], true);
+        restObject[key] = nestedMongoObjectToNestedParseObject(mongoObject[key]);
       }
     }
 
-    if (!isNestedObject) {
-      let relationFields = schema.getRelationFields(className);
-      Object.assign(restObject, relationFields);
-    }
-    return restObject;
+    const relationFieldNames = Object.keys(schema.fields).filter(fieldName => schema.fields[fieldName].type === 'Relation');
+    let relationFields = {};
+    relationFieldNames.forEach(relationFieldName => {
+      relationFields[relationFieldName] = {
+        __type: 'Relation',
+        className: schema.fields[relationFieldName].targetClass,
+      }
+    });
+
+    return { ...restObject, ...relationFields };
   default:
     throw 'unknown js type';
-  }
-}
-
-function transformSelect(selectObject, key ,objects) {
-  var values = [];
-  for (var result of objects) {
-    values.push(result[key]);
-  }
-  delete selectObject['$select'];
-  if (Array.isArray(selectObject['$in'])) {
-    selectObject['$in'] = selectObject['$in'].concat(values);
-  } else {
-    selectObject['$in'] = values;
-  }
-}
-
-function transformDontSelect(dontSelectObject, key, objects) {
-  var values = [];
-  for (var result of objects) {
-    values.push(result[key]);
-  }
-  delete dontSelectObject['$dontSelect'];
-  if (Array.isArray(dontSelectObject['$nin'])) {
-    dontSelectObject['$nin'] = dontSelectObject['$nin'].concat(values);
-  } else {
-    dontSelectObject['$nin'] = values;
-  }
-}
-
-function transformInQuery(inQueryObject, className, results) {
-  var values = [];
-  for (var result of results) {
-    values.push({
-      __type: 'Pointer',
-      className: className,
-      objectId: result.objectId
-    });
-  }
-  delete inQueryObject['$inQuery'];
-  if (Array.isArray(inQueryObject['$in'])) {
-    inQueryObject['$in'] = inQueryObject['$in'].concat(values);
-  } else {
-    inQueryObject['$in'] = values;
-  }
-}
-
-function transformNotInQuery(notInQueryObject, className, results) {
-  var values = [];
-  for (var result of results) {
-    values.push({
-      __type: 'Pointer',
-      className: className,
-      objectId: result.objectId
-    });
-  }
-  delete notInQueryObject['$notInQuery'];
-  if (Array.isArray(notInQueryObject['$nin'])) {
-    notInQueryObject['$nin'] = notInQueryObject['$nin'].concat(values);
-  } else {
-    notInQueryObject['$nin'] = values;
   }
 }
 
@@ -1034,9 +880,5 @@ module.exports = {
   parseObjectToMongoObjectForCreate,
   transformUpdate,
   transformWhere,
-  transformSelect,
-  transformDontSelect,
-  transformInQuery,
-  transformNotInQuery,
-  untransformObject
+  mongoObjectToParseObject,
 };

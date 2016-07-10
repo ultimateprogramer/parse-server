@@ -27,9 +27,9 @@ function handleParseHeaders(req, res, next) {
     dotNetKey: req.get('X-Parse-Windows-Key'),
     restAPIKey: req.get('X-Parse-REST-API-Key')
   };
-  
+
   var basicAuth = httpAuth(req);
-  
+
   if (basicAuth) {
     info.appId = basicAuth.appId
     info.masterKey = basicAuth.masterKey || info.masterKey;
@@ -84,6 +84,10 @@ function handleParseHeaders(req, res, next) {
         info.masterKey = req.body._MasterKey;
         delete req.body._MasterKey;
       }
+      if (req.body._ContentType) {
+        req.headers['content-type'] = req.body._ContentType;
+        delete req.body._ContentType;
+      }
     } else {
       return invalidRequest(req, res);
     }
@@ -126,6 +130,10 @@ function handleParseHeaders(req, res, next) {
     return invalidRequest(req, res);
   }
 
+  if (req.url == "/login") {
+    delete info.sessionToken;
+  }
+
   if (!info.sessionToken) {
     req.auth = new auth.Auth({ config: req.config, installationId: info.installationId, isMaster: false });
     next();
@@ -156,24 +164,24 @@ function httpAuth(req) {
   if (!(req.req || req).headers.authorization)
     return ;
 
-  var header = (req.req || req).headers.authorization;  
-  var appId, masterKey, javascriptKey;  
+  var header = (req.req || req).headers.authorization;
+  var appId, masterKey, javascriptKey;
 
   // parse header
   var authPrefix = 'basic ';
-  
+
   var match = header.toLowerCase().indexOf(authPrefix);
-  
+
   if (match == 0) {
     var encodedAuth = header.substring(authPrefix.length, header.length);
     var credentials = decodeBase64(encodedAuth).split(':');
-    
+
     if (credentials.length == 2) {
       appId = credentials[0];
       var key = credentials[1];
-    
+
       var jsKeyPrefix = 'javascript-key=';
-    
+
       var matchKey = key.indexOf(jsKeyPrefix)
       if (matchKey == 0) {
         javascriptKey = key.substring(jsKeyPrefix.length, key.length);
@@ -183,7 +191,7 @@ function httpAuth(req) {
       }
     }
   }
-  
+
   return {appId: appId, masterKey: masterKey, javascriptKey: javascriptKey};
 }
 
@@ -198,7 +206,7 @@ var allowCrossDomain = function(req, res, next) {
 
   // intercept OPTIONS method
   if ('OPTIONS' == req.method) {
-    res.send(200);
+    res.sendStatus(200);
   }
   else {
     next();
@@ -215,6 +223,7 @@ var allowMethodOverride = function(req, res, next) {
 };
 
 var handleParseErrors = function(err, req, res, next) {
+  // TODO: Add logging as those errors won't make it to the PromiseRouter
   if (err instanceof Parse.Error) {
     var httpStatus;
 

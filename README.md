@@ -28,8 +28,6 @@ That's it! You are now running a standalone version of Parse Server on your mach
 
 **Using a remote MongoDB?** Pass the  `--databaseURI DATABASE_URI` parameter when starting `parse-server`. Learn more about configuring Parse Server [here](#configuration). For a full list of available options, run `parse-server --help`.
 
-**Want logs to be in placed in other folder?** Pass the `PARSE_SERVER_LOGS_FOLDER` environment variable when starting `parse-server`. Usage :-  `PARSE_SERVER_LOGS_FOLDER='<path-to-logs-folder>' parse-server --appId APPLICATION_ID --masterKey MASTER_KEY`
-
 ### Saving your first object
 
 Now that you're running Parse Server, it is time to save your first object. We'll use the [REST API](https://parse.com/docs/rest/guide), but you can easily do the same using any of the [Parse SDKs](https://parseplatform.github.io/#sdks). Run the following:
@@ -183,7 +181,7 @@ The client keys used with Parse are no longer necessary with Parse Server. If yo
 * `fileKey` - For migrated apps, this is necessary to provide access to files already hosted on Parse.
 * `allowClientClassCreation` - Set to false to disable client class creation. Defaults to true.
 * `enableAnonymousUsers` - Set to false to disable anonymous users. Defaults to true.
-* `oauth` - Used to configure support for [3rd party authentication](https://github.com/ParsePlatform/parse-server/wiki/Parse-Server-Guide#oauth).
+* `oauth` - Used to configure support for [3rd party authentication](https://github.com/ParsePlatform/parse-server/wiki/OAuth).
 * `facebookAppIds` - An array of valid Facebook application IDs that users may authenticate with.
 * `mountPath` - Mount path for the server. Defaults to `/parse`.
 * `filesAdapter` - The default behavior (GridStore) can be changed by creating an adapter class (see [`FilesAdapter.js`](https://github.com/ParsePlatform/parse-server/blob/master/src/Adapters/Files/FilesAdapter.js)).
@@ -191,6 +189,16 @@ The client keys used with Parse are no longer necessary with Parse Server. If yo
 * `loggerAdapter` - The default behavior/transport (File) can be changed by creating an adapter class (see [`LoggerAdapter.js`](https://github.com/ParsePlatform/parse-server/blob/master/src/Adapters/Logger/LoggerAdapter.js)).
 * `sessionLength` - The length of time in seconds that a session should be valid for. Defaults to 31536000 seconds (1 year).
 * `revokeSessionOnPasswordReset` - When a user changes their password, either through the reset password email or while logged in, all sessions are revoked if this is true. Set to false if you don't want to revoke sessions.
+
+##### Logging
+
+Use the `PARSE_SERVER_LOGS_FOLDER` environment variable when starting `parse-server` to save your server logfiles to the specified folder.
+
+Usage:
+
+```
+PARSE_SERVER_LOGS_FOLDER='<path-to-logs-folder>' parse-server --appId APPLICATION_ID --masterKey MASTER_KEY
+```
 
 ##### Email verification and password reset
 
@@ -201,6 +209,11 @@ var server = ParseServer({
   ...otherOptions,
   // Enable email verification
   verifyUserEmails: true,
+
+  // set preventLoginWithUnverifiedEmail to false to allow user to login without verifying their email
+  // set preventLoginWithUnverifiedEmail to true to prevent user from login if their email is not verified
+  preventLoginWithUnverifiedEmail: false, // defaults to false
+
   // The public URL of your app.
   // This will appear in the link that is used to verify email addresses and reset passwords.
   // Set the mount path as it is in serverURL
@@ -222,7 +235,11 @@ var server = ParseServer({
 });
 ```
 
-You can also use other email adapters contributed by the community such as [parse-server-sendgrid-adapter](https://www.npmjs.com/package/parse-server-sendgrid-adapter) or [parse-server-mandrill-adapter](https://github.com/back4app/parse-server-mandrill-adapter).
+You can also use other email adapters contributed by the community such as:
+- [parse-server-postmark-adapter](https://www.npmjs.com/package/parse-server-postmark-adapter)
+- [parse-server-sendgrid-adapter](https://www.npmjs.com/package/parse-server-sendgrid-adapter)
+- [parse-server-mandrill-adapter](https://www.npmjs.com/package/parse-server-mandrill-adapter)
+- [parse-server-simple-ses-adapter](https://www.npmjs.com/package/parse-server-simple-ses-adapter)
 
 ### Using environment variables to configure Parse Server
 
@@ -244,6 +261,9 @@ $ PORT=8080 parse-server --appId APPLICATION_ID --masterKey MASTER_KEY
 ```
 
 For the full list of configurable environment variables, run `parse-server --help`.
+
+### Available Adapters
+[Parse Server Modules (Adapters)](https://github.com/parse-server-modules)
 
 ### Configuring File Adapters
 

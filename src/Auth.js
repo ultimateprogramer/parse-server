@@ -58,7 +58,7 @@ var getAuthForSessionToken = function({ config, sessionToken, installationId } =
     return query.execute().then((response) => {
       var results = response.results;
       if (results.length !== 1 || !results[0]['user']) {
-        return nobody(config);
+        throw new Parse.Error(Parse.Error.INVALID_SESSION_TOKEN, 'invalid session token');
       }
 
       var now = new Date(),
@@ -72,7 +72,6 @@ var getAuthForSessionToken = function({ config, sessionToken, installationId } =
       obj['className'] = '_User';
       obj['sessionToken'] = sessionToken;
       config.cacheController.user.put(sessionToken, obj);
-
       let userObject = Parse.Object.fromJSON(obj);
       return new Auth({config, isMaster: false, installationId, user: userObject});
     });
@@ -99,7 +98,8 @@ Auth.prototype._loadRoles = function() {
   var cacheAdapter = this.config.cacheController;
   return cacheAdapter.role.get(this.user.id).then((cachedRoles) => {
     if (cachedRoles != null) {
-      this.fetchedroles = true;
+      this.fetchedRoles = true;
+      this.userRoles = cachedRoles;
       return Promise.resolve(cachedRoles);
     }
 
